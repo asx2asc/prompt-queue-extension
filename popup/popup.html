@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>LLM Prompt Queue</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="popup-container">
+    <!-- Header Section -->
+    <header class="header">
+      <h1 class="header-title">LLM Prompt Queue</h1>
+      <div class="status-indicator" data-status="idle">
+        <span class="status-dot"></span>
+        <span class="status-text">Idle</span>
+      </div>
+    </header>
+
+    <!-- Site Connection Status -->
+    <div class="site-status" data-connected="false">
+      <span class="site-icon"></span>
+      <span class="site-text">Not on supported site</span>
+    </div>
+
+    <!-- Add Prompt Section -->
+    <section class="add-prompt-section">
+      <label for="prompt-input" class="input-label">New Prompt</label>
+      <textarea
+        id="prompt-input"
+        class="prompt-input"
+        placeholder="Enter or paste your prompt here..."
+        rows="3"
+        aria-describedby="prompt-hint"
+      ></textarea>
+      <span id="prompt-hint" class="input-hint">Press Ctrl+Enter to quickly add</span>
+      <button id="add-to-queue-btn" class="btn btn-primary" type="button">
+        Add to Queue
+      </button>
+    </section>
+
+    <!-- Settings Section -->
+    <section class="settings-section">
+      <div class="toggle-container">
+        <label class="toggle-label" for="auto-send-toggle">
+          Auto-send enabled
+        </label>
+        <label class="toggle-switch">
+          <input
+            type="checkbox"
+            id="auto-send-toggle"
+            role="switch"
+            aria-checked="false"
+          >
+          <span class="toggle-slider"></span>
+        </label>
+      </div>
+      <!-- Manual Send Next Button (shown when auto-send is OFF) -->
+      <button id="send-next-btn" class="btn btn-secondary" type="button" style="display: none;">
+        <span class="btn-icon-left">&#9654;</span>
+        Send Next Prompt
+      </button>
+    </section>
+
+    <!-- Queue Section -->
+    <section class="queue-section">
+      <div class="queue-header">
+        <h2 class="queue-title">Queue <span id="queue-count" class="queue-count">(0)</span></h2>
+        <button id="clear-all-btn" class="btn btn-danger btn-small" type="button" disabled>
+          Clear All
+        </button>
+      </div>
+      <div id="queue-list" class="queue-list" role="list" aria-label="Prompt queue">
+        <div class="queue-empty" data-empty="true">
+          <p>No prompts in queue</p>
+          <p class="queue-empty-hint">Add a prompt above to get started</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- Status Messages -->
+    <div id="status-message" class="status-message" role="alert" aria-live="polite" hidden></div>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
