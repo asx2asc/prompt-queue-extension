@@ -113,7 +113,7 @@
    * @returns {Promise<Element>} Input element
    */
   async function getInputElement() {
-    return waitForElement(SELECTORS.input, { timeout: 5000 });
+    return waitForElement(SELECTORS.input, { timeout: 900000 });
   }
 
   /**
@@ -121,7 +121,7 @@
    * @returns {Promise<Element>} Send button element
    */
   async function getSendButton() {
-    return waitForElement(SELECTORS.sendButton, { timeout: 5000 });
+    return waitForElement(SELECTORS.sendButton, { timeout: 900000 });
   }
 
   /**
