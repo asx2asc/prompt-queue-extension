@@ -1287,13 +1287,30 @@ class MessageRouter {
         return { acknowledged: true };
 
       case ContentMessageType.ERROR:
-        // Something went wrong in content script
-        logger.error('Content script error:', payload);
+        // Handle intentional lifecycle teardowns sent as "errors" by the content script
+        // ENHANCED: Explicitly check for payload.isNavigating to catch all cached payload formats
+        if (payload && (payload.type === 'navigation' || payload.type === 'visibility' || payload.isNavigating)) {
+          logger.info(`Content script lifecycle event: ${payload.message}`);
+          stateManager.set('processingState', ProcessingState.IDLE);
+          notifyPopup({
+            type: 'PROCESSING_STOPPED',
+            reason: payload.type === 'navigation' ? 'tab_navigated_away' : 'tab_hidden'
+          });
+          return { acknowledged: true };
+        }
+
+        // Extract properties to prevent [object Object] interpolation during logging
+        // ENHANCED: Removed optional chaining (?.) which can sometimes fail in older service worker contexts
+        const errorMessage = payload && payload.message ? payload.message : 'Unknown error';
+        const errorDetail = payload && payload.error ? payload.error : JSON.stringify(payload);
+
+        logger.error(`Content script error: ${errorMessage}`, errorDetail);
+
         stateManager.set('processingState', ProcessingState.IDLE);
         notifyPopup({
           type: 'CONTENT_SCRIPT_ERROR',
           tabId,
-          error: payload?.message || 'Unknown error'
+          error: errorMessage
         });
         return { acknowledged: true };
 

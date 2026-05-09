@@ -17,6 +17,9 @@ let currentSite = null;
 /** @type {boolean} Whether we're currently processing a prompt */
 let isProcessing = false;
 
+/** @type {boolean} Track if the extension context has been permanently disconnected */
+let extensionContextInvalidated = false;
+
 /** @type {MutationObserver|null} Active generation observer */
 let generationObserver = null;
 
@@ -116,7 +119,7 @@ function waitForElement(selectors, options = {}) {
       childList: true,
       subtree: true,
       attributes: true,
-      attributeFilter: ['style', 'class', 'hidden', 'disabled']
+      attributeFilter:['style', 'class', 'hidden', 'disabled']
     });
 
     // Timeout handler
@@ -372,6 +375,11 @@ function findElement(selectors, options = {}) {
  * @returns {Promise<Object>} Response from service worker
  */
 async function sendToBackground(type, data = {}, options = {}) {
+  // Fail fast if the extension context is already known to be dead
+  if (extensionContextInvalidated) {
+    return { success: false, error: 'Extension context invalidated' };
+  }
+
   const { retries = 0, retryDelay = 500 } = options;
 
   const message = {
@@ -382,19 +390,48 @@ async function sendToBackground(type, data = {}, options = {}) {
     timestamp: Date.now()
   };
 
-  for (let attempt = 0; attempt <= retries; attempt++) {
+  // If the page is unloading, sending messages inherently throws 'Extension context invalidated'
+  // because Chrome immediately tears down the message port. We skip retries and suppress errors.
+  const isTearingDown = typeof navigationInProgress !== 'undefined' && navigationInProgress;
+  const actualRetries = isTearingDown ? 0 : retries;
+
+  for (let attempt = 0; attempt <= actualRetries; attempt++) {
     try {
+      // Safety check to ensure the extension context hasn't been completely wiped
+      if (typeof chrome === 'undefined' || !chrome.runtime || !chrome.runtime.sendMessage) {
+        extensionContextInvalidated = true;
+        if (!isTearingDown) {
+          log.debug('Chrome runtime disconnected. Extension context invalidated.');
+        }
+        return { success: false, error: 'Extension context invalidated' };
+      }
+
       log.debug('Sending to background:', message);
-
       const response = await chrome.runtime.sendMessage(message);
-
       log.debug('Response from background:', response);
       return response;
     } catch (error) {
-      if (attempt < retries) {
-        log.debug(`Retrying sendToBackground (attempt ${attempt + 1}/${retries}):`, error.message);
+      const errorStr = error ? (error.message || String(error)) : 'Unknown error';
+
+      // Explicitly catch context invalidation errors
+      if (errorStr.includes('Extension context invalidated') || errorStr.includes('context invalidated')) {
+        extensionContextInvalidated = true; // Permanently sever connection attempts
+        if (!isTearingDown) {
+          log.debug('Extension context invalidated. Connection lost. Awaiting page refresh.');
+        }
+        return { success: false, error: 'Extension context invalidated' };
+      }
+
+      if (attempt < actualRetries) {
+        log.debug(`Retrying sendToBackground (attempt ${attempt + 1}/${actualRetries}):`, errorStr);
         await new Promise(resolve => setTimeout(resolve, retryDelay));
       } else {
+        // Gracefully handle failures during page teardown without throwing red console errors
+        if (isTearingDown) {
+          log.debug('Message failed during page teardown (expected behavior).', errorStr);
+          return { success: false, error: 'Navigation teardown' };
+        }
+
         log.error('Failed to send message to background:', error);
         throw error;
       }
@@ -745,7 +782,7 @@ async function retryDOMOperation(fn, options = {}) {
     jitter: true,
     shouldRetry: (error) => {
       // Retry on DOM-related errors
-      const retryablePatterns = [
+      const retryablePatterns =[
         /element not found/i,
         /selector/i,
         /null/i,

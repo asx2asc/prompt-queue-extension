@@ -5,7 +5,8 @@
 
 const STORAGE_KEYS = {
   QUEUE: 'promptQueue',
-  SETTINGS: 'settings'
+  SETTINGS: 'settings',
+  LIBRARY: 'promptLibrary'
 };
 
 const DEFAULT_SETTINGS = {
@@ -24,25 +25,20 @@ function generateUUID() {
   });
 }
 
-/**
- * Retrieves the current queue from storage
- * @returns {Promise<Array>} Promise resolving to array of queue items
- */
+// =============================================================================
+// QUEUE OPERATIONS
+// =============================================================================
+
 async function getQueue() {
   try {
     const result = await chrome.storage.local.get(STORAGE_KEYS.QUEUE);
-    return result[STORAGE_KEYS.QUEUE] || [];
+    return result[STORAGE_KEYS.QUEUE] ||[];
   } catch (error) {
     console.error('Error getting queue:', error);
-    return [];
+    return[];
   }
 }
 
-/**
- * Adds a prompt to the queue
- * @param {string} prompt - The prompt text to add
- * @returns {Promise<Array>} Promise resolving to updated queue array
- */
 async function addToQueue(prompt) {
   try {
     const queue = await getQueue();
@@ -52,7 +48,7 @@ async function addToQueue(prompt) {
       createdAt: Date.now()
     };
     queue.push(newItem);
-    await chrome.storage.local.set({ [STORAGE_KEYS.QUEUE]: queue });
+    await updateQueue(queue);
     return queue;
   } catch (error) {
     console.error('Error adding to queue:', error);
@@ -60,16 +56,11 @@ async function addToQueue(prompt) {
   }
 }
 
-/**
- * Removes an item from the queue by its ID
- * @param {string} id - The unique identifier of the item to remove
- * @returns {Promise<Array>} Promise resolving to updated queue array
- */
 async function removeFromQueue(id) {
   try {
     const queue = await getQueue();
     const updatedQueue = queue.filter(item => item.id !== id);
-    await chrome.storage.local.set({ [STORAGE_KEYS.QUEUE]: updatedQueue });
+    await updateQueue(updatedQueue);
     return updatedQueue;
   } catch (error) {
     console.error('Error removing from queue:', error);
@@ -77,24 +68,131 @@ async function removeFromQueue(id) {
   }
 }
 
-/**
- * Clears all items from the queue
- * @returns {Promise<Array>} Promise resolving to empty array
- */
 async function clearQueue() {
   try {
-    await chrome.storage.local.set({ [STORAGE_KEYS.QUEUE]: [] });
-    return [];
+    await updateQueue([]);
+    return[];
   } catch (error) {
     console.error('Error clearing queue:', error);
     throw error;
   }
 }
 
-/**
- * Retrieves settings from storage
- * @returns {Promise<Object>} Promise resolving to settings object
- */
+async function updateQueue(queue) {
+  return new Promise((resolve, reject) => {
+    chrome.storage.local.set({ [STORAGE_KEYS.QUEUE]: queue }, () => {
+      if (chrome.runtime.lastError) {
+        return reject(new Error("Failed to update queue: " + chrome.runtime.lastError.message));
+      }
+      resolve(queue);
+    });
+  });
+}
+
+// =============================================================================
+// LIBRARY OPERATIONS
+// =============================================================================
+
+async function getLibrary() {
+  try {
+    const result = await chrome.storage.local.get(STORAGE_KEYS.LIBRARY);
+    return result[STORAGE_KEYS.LIBRARY] ||[];
+  } catch (error) {
+    console.error('Error getting library:', error);
+    return[];
+  }
+}
+
+async function checkStorageQuota(estimatedBytesToAdd) {
+  return new Promise((resolve, reject) => {
+    chrome.storage.local.getBytesInUse(null, (bytesInUse) => {
+      if (chrome.runtime.lastError) {
+        return reject(new Error(chrome.runtime.lastError.message));
+      }
+      // Chrome's default QUOTA_BYTES for local is 5,242,880 (5MB)
+      const QUOTA_LIMIT = 5242880;
+      if (bytesInUse + estimatedBytesToAdd > QUOTA_LIMIT) {
+        reject(new Error("Storage quota exceeded. Please delete old saved chains."));
+      } else {
+        resolve();
+      }
+    });
+  });
+}
+
+async function saveToLibrary(name, queueItems) {
+  const library = await getLibrary();
+
+  // Validate schema to prevent corruption
+  if (!Array.isArray(queueItems) || queueItems.some(item => typeof item.prompt !== 'string')) {
+    throw new Error("Invalid queue data format.");
+  }
+
+  const newChain = {
+    id: generateUUID(),
+    name: name,
+    createdAt: Date.now(),
+    prompts: queueItems.map(item => ({ prompt: item.prompt }))
+  };
+
+  const estimatedSize = JSON.stringify(newChain).length * 2; // Rough byte size estimate
+  await checkStorageQuota(estimatedSize);
+
+  library.push(newChain);
+
+  return new Promise((resolve, reject) => {
+    chrome.storage.local.set({ [STORAGE_KEYS.LIBRARY]: library }, () => {
+      if (chrome.runtime.lastError) {
+        return reject(new Error("Failed to write to storage: " + chrome.runtime.lastError.message));
+      }
+      resolve(library);
+    });
+  });
+}
+
+async function removeFromLibrary(id) {
+  try {
+    const library = await getLibrary();
+    const updatedLibrary = library.filter(chain => chain.id !== id);
+
+    return new Promise((resolve, reject) => {
+      chrome.storage.local.set({ [STORAGE_KEYS.LIBRARY]: updatedLibrary }, () => {
+        if (chrome.runtime.lastError) {
+          return reject(new Error("Failed to remove from library: " + chrome.runtime.lastError.message));
+        }
+        resolve(updatedLibrary);
+      });
+    });
+  } catch (error) {
+    console.error('Error removing from library:', error);
+    throw error;
+  }
+}
+
+async function loadChainToQueue(chainId, append = false) {
+  const library = await getLibrary();
+  const chain = library.find(c => c.id === chainId);
+
+  if (!chain || !Array.isArray(chain.prompts)) {
+    throw new Error("Chain data is corrupted or missing.");
+  }
+
+  const newItems = chain.prompts.map(p => ({
+    id: generateUUID(),
+    prompt: p.prompt,
+    createdAt: Date.now()
+  }));
+
+  const currentQueue = append ? await getQueue() : [];
+  const combinedQueue = [...currentQueue, ...newItems];
+
+  return await updateQueue(combinedQueue);
+}
+
+// =============================================================================
+// SETTINGS OPERATIONS
+// =============================================================================
+
 async function getSettings() {
   try {
     const result = await chrome.storage.local.get(STORAGE_KEYS.SETTINGS);
@@ -105,29 +203,35 @@ async function getSettings() {
   }
 }
 
-/**
- * Saves settings to storage
- * @param {Object} settings - Settings object to save
- * @returns {Promise<Object>} Promise resolving to saved settings object
- */
 async function saveSettings(settings) {
   try {
     const currentSettings = await getSettings();
     const updatedSettings = { ...currentSettings, ...settings };
-    await chrome.storage.local.set({ [STORAGE_KEYS.SETTINGS]: updatedSettings });
-    return updatedSettings;
+
+    return new Promise((resolve, reject) => {
+      chrome.storage.local.set({ [STORAGE_KEYS.SETTINGS]: updatedSettings }, () => {
+        if (chrome.runtime.lastError) {
+          return reject(new Error("Failed to save settings: " + chrome.runtime.lastError.message));
+        }
+        resolve(updatedSettings);
+      });
+    });
   } catch (error) {
     console.error('Error saving settings:', error);
     throw error;
   }
 }
 
-// Export functions for use in other scripts
 export {
   getQueue,
   addToQueue,
   removeFromQueue,
   clearQueue,
+  updateQueue,
+  getLibrary,
+  saveToLibrary,
+  removeFromLibrary,
+  loadChainToQueue,
   getSettings,
   saveSettings
 };
