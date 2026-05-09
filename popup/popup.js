@@ -161,6 +161,81 @@ const storage = {
         resolve(updatedSettings);
       });
     });
+  },
+
+  async exportLibraryData() {
+    try {
+      const library = await this.getLibrary();
+      return JSON.stringify(library, null, 2);
+    } catch (error) {
+      throw new Error("Failed to serialize library for export.");
+    }
+  },
+
+  async importLibraryData(jsonData, append = false) {
+    let importedData;
+    try {
+      importedData = JSON.parse(jsonData);
+    } catch (error) {
+      throw new Error("Invalid file format: The file does not contain valid JSON.");
+    }
+
+    if (!Array.isArray(importedData)) {
+      throw new Error("Invalid file format: Expected an array of prompt chains.");
+    }
+
+    const validatedChains =[];
+    for (const chain of importedData) {
+      if (typeof chain !== 'object' || chain === null) continue;
+      
+      if (typeof chain.name !== 'string' || chain.name.trim() === '') {
+        throw new Error("Invalid schema: One or more chains are missing a valid 'name' property.");
+      }
+
+      if (!Array.isArray(chain.prompts)) {
+        throw new Error(`Invalid schema: Chain '${chain.name}' is missing a valid 'prompts' array.`);
+      }
+
+      const validPrompts = chain.prompts.filter(p => typeof p === 'object' && p !== null && typeof p.prompt === 'string');
+      if (validPrompts.length === 0) {
+         throw new Error(`Invalid schema: Chain '${chain.name}' contains no valid text prompts.`);
+      }
+
+      validatedChains.push({
+        id: (typeof chain.id === 'string' && chain.id.trim() !== '') ? chain.id : generateUUID(),
+        name: chain.name.trim(),
+        createdAt: (typeof chain.createdAt === 'number') ? chain.createdAt : Date.now(),
+        prompts: validPrompts.map(p => ({ prompt: p.prompt }))
+      });
+    }
+
+    if (validatedChains.length === 0) {
+      throw new Error("Import failed: No valid prompt chains were found in the file.");
+    }
+
+    let currentLibrary = append ? await this.getLibrary() : [];
+    const mergedLibrary =[...currentLibrary];
+
+    for (const newChain of validatedChains) {
+      const existingIndex = mergedLibrary.findIndex(existing => existing.id === newChain.id);
+      if (existingIndex >= 0) {
+        mergedLibrary[existingIndex] = newChain;
+      } else {
+        mergedLibrary.push(newChain);
+      }
+    }
+
+    const estimatedSize = JSON.stringify(mergedLibrary).length * 2;
+    await this.checkStorageQuota(estimatedSize);
+
+    return new Promise((resolve, reject) => {
+      chrome.storage.local.set({[STORAGE_KEYS.LIBRARY]: mergedLibrary }, () => {
+        if (chrome.runtime.lastError) {
+          return reject(new Error("Failed to write imported library to storage: " + chrome.runtime.lastError.message));
+        }
+        resolve(mergedLibrary);
+      });
+    });
   }
 };
 
@@ -229,6 +304,10 @@ function initializeElements() {
 
   elements.libraryList = getRequiredElement('#library-list');
   elements.statusMessage = getRequiredElement('#status-message');
+
+  elements.importLibraryBtn = getRequiredElement('#import-library-btn');
+  elements.exportLibraryBtn = getRequiredElement('#export-library-btn');
+  elements.importFileInput = getRequiredElement('#import-file-input');
 }
 
 // =============================================================================
@@ -350,6 +429,11 @@ function attachEventListeners() {
 
   // Event Delegation for Library Cards
   elements.libraryList.addEventListener('click', handleLibraryAction);
+
+  // File I/O Actions
+  elements.exportLibraryBtn.addEventListener('click', handleExportLibrary);
+  elements.importLibraryBtn.addEventListener('click', () => elements.importFileInput.click());
+  elements.importFileInput.addEventListener('change', handleImportLibrary);
 }
 
 function switchTab(targetId) {
@@ -529,6 +613,79 @@ async function processLoadChainRequest(chainId, append) {
   } catch (error) {
     showStatusMessage(error.message, 'error');
   }
+}
+
+async function handleExportLibrary() {
+  try {
+    elements.exportLibraryBtn.disabled = true;
+    const jsonData = await storage.exportLibraryData();
+    
+    if (jsonData === "[]") {
+      showStatusMessage('Library is empty, nothing to export', 'warning');
+      elements.exportLibraryBtn.disabled = false;
+      return;
+    }
+
+    const base64Data = btoa(unescape(encodeURIComponent(jsonData)));
+    const dataUri = `data:application/json;base64,${base64Data}`;
+    const timestamp = new Date().toISOString().split('T')[0];
+    const filename = `llm-prompt-library-export-${timestamp}.json`;
+
+    chrome.downloads.download({
+      url: dataUri,
+      filename: filename,
+      saveAs: true
+    }, (downloadId) => {
+      elements.exportLibraryBtn.disabled = false;
+      if (chrome.runtime.lastError) {
+        showStatusMessage('Download failed: ' + chrome.runtime.lastError.message, 'error');
+      } else {
+        showStatusMessage('Library exported successfully', 'success');
+      }
+    });
+  } catch (error) {
+    elements.exportLibraryBtn.disabled = false;
+    showStatusMessage('Failed to prepare export data', 'error');
+  }
+}
+
+async function handleImportLibrary(event) {
+  const file = event.target.files[0];
+  if (!file) {
+    return; // User cancelled file picker
+  }
+
+  // Pre-validate file size (e.g., hard limit of 6MB to prevent memory exhaustion before reading)
+  if (file.size > 6291456) {
+    showStatusMessage('File is too large to process', 'error');
+    event.target.value = '';
+    return;
+  }
+
+  const reader = new FileReader();
+  
+  reader.onload = async (e) => {
+    try {
+      const append = confirm("Do you want to append this data to your existing library?\n\nSelect 'OK' to append to current chains, or 'Cancel' to permanently overwrite the library.");
+      
+      showStatusMessage('Importing library data...', 'info', { persist: true });
+      const updatedLibrary = await storage.importLibraryData(e.target.result, append);
+      
+      renderLibrary(updatedLibrary);
+      showStatusMessage('Library imported successfully', 'success');
+    } catch (error) {
+      showStatusMessage(error.message, 'error', { duration: 5000 });
+    } finally {
+      event.target.value = ''; // Reset input to allow re-importing the same file if needed
+    }
+  };
+
+  reader.onerror = () => {
+    showStatusMessage('Error reading file from disk', 'error');
+    event.target.value = '';
+  };
+
+  reader.readAsText(file, 'UTF-8');
 }
 
 // =============================================================================

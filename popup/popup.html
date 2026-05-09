@@ -103,8 +103,13 @@
     <!-- =================================================================== -->
     <div id="view-library" class="view-section" hidden>
       <section class="library-section">
-        <div class="library-header">
+        <div class="library-header" style="display: flex; justify-content: space-between; align-items: center;">
           <h2 class="library-title">Saved Prompt Chains</h2>
+          <div style="display: flex; gap: 8px;">
+            <button id="import-library-btn" class="btn btn-secondary btn-small" type="button" aria-label="Import Library">Import</button>
+            <button id="export-library-btn" class="btn btn-secondary btn-small" type="button" aria-label="Export Library">Export</button>
+            <input type="file" id="import-file-input" accept="application/json,.json" style="display: none;" aria-hidden="true" tabindex="-1">
+          </div>
         </div>
         <div id="library-list" class="library-list" role="list">
           <!-- Populated by JavaScript -->

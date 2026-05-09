@@ -9,6 +9,7 @@
     "scripting",
     "tabs",
     "webNavigation"
+  ,"downloads"
   ],
   "host_permissions": [
     "https://chat.openai.com/*",
