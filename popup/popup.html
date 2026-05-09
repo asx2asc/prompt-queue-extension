@@ -41,17 +41,41 @@
           id="prompt-input"
           class="prompt-input"
           placeholder="Enter or paste your prompt here..."
-          rows="3"
+          rows=" 2"
           aria-describedby="prompt-hint"
         ></textarea>
         <span id="prompt-hint" class="input-hint">Press Ctrl+Enter to quickly add</span>
-        <button id="add-to-queue-btn" class="btn btn-primary" type="button">
+        <button id="add-to-queue-btn" class="btn btn-secondary" type="button">
           Add to Queue
         </button>
       </section>
 
-      <!-- Settings Section -->
-      <section class="settings-section">
+      
+
+      <!-- Queue Section -->
+      <section class="queue-section">
+        <div class="queue-header">
+          <h2 class="queue-title">Queue <span id="queue-count" class="queue-count">(0)</span></h2>
+          <div style="display: flex; gap: 8px; justify-content: space-between; width: 100%;">
+            <button id="save-queue-btn" class="btn btn-secondary btn-small" type="button" disabled>
+              Save Queue
+            </button>
+            <button id="clear-all-btn" class="btn btn-danger btn-small" type="button" disabled style="background-color: var(--color-error-bg);">
+              Clear All
+            </button>
+          </div>
+        </div>
+        <div id="queue-list" class="queue-list" role="list" aria-label="Prompt queue">
+          <div class="queue-empty" data-empty="true">
+            <p>No prompts in queue</p>
+            <p class="queue-empty-hint">Add a prompt above to get started</p>
+          </div>
+        </div>
+      </section>
+
+    <!-- Settings Section (Relocated as Footer) -->
+<!-- Settings Section -->
+      <section class="settings-section execution-footer">
         <div class="toggle-container">
           <label class="toggle-label" for="auto-send-toggle">
             Auto-send enabled
@@ -66,31 +90,10 @@
             <span class="toggle-slider"></span>
           </label>
         </div>
-        <button id="send-next-btn" class="btn btn-secondary" type="button" style="display: none;">
+        <button id="send-next-btn" class="btn btn-primary" type="button" style="display: none;">
           <span class="btn-icon-left">&#9654;</span>
           Send Next Prompt
         </button>
-      </section>
-
-      <!-- Queue Section -->
-      <section class="queue-section">
-        <div class="queue-header">
-          <h2 class="queue-title">Queue <span id="queue-count" class="queue-count">(0)</span></h2>
-          <div style="display: flex; gap: 8px;">
-            <button id="save-queue-btn" class="btn btn-secondary btn-small" type="button" disabled>
-              Save
-            </button>
-            <button id="clear-all-btn" class="btn btn-danger btn-small" type="button" disabled>
-              Clear All
-            </button>
-          </div>
-        </div>
-        <div id="queue-list" class="queue-list" role="list" aria-label="Prompt queue">
-          <div class="queue-empty" data-empty="true">
-            <p>No prompts in queue</p>
-            <p class="queue-empty-hint">Add a prompt above to get started</p>
-          </div>
-        </div>
       </section>
 
     </div>
@@ -113,6 +116,9 @@
     <div id="status-message" class="status-message" role="alert" aria-live="polite" hidden></div>
   </div>
 
+  <script src="sortable.min.js"></script>
+  <script src="sortable.min.js"></script>
+  <script src="sortable.min.js"></script>
   <script src="popup.js"></script>
 </body>
 </html>

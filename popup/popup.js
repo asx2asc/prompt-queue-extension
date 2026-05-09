@@ -239,6 +239,54 @@ document.addEventListener('DOMContentLoaded', async () => {
   initializeElements();
   attachEventListeners();
 
+  // Initialize Drag-and-Drop Reordering
+  if (typeof Sortable !== 'undefined') {
+    Sortable.create(elements.queueList, {
+      handle: '.queue-item-drag-handle',
+      animation: 150,
+      ghostClass: 'queue-item-ghost',
+      onEnd: async function (evt) {
+        if (evt.oldIndex === evt.newIndex) return;
+        const queue = await storage.getQueue();
+        const movedItem = queue.splice(evt.oldIndex, 1)[0];
+        queue.splice(evt.newIndex, 0, movedItem);
+        await storage.updateQueue(queue);
+      }
+    });
+  }
+
+  // Initialize Drag-and-Drop Reordering
+  if (typeof Sortable !== 'undefined') {
+    Sortable.create(elements.queueList, {
+      handle: '.queue-item-drag-handle',
+      animation: 150,
+      ghostClass: 'queue-item-ghost',
+      onEnd: async function (evt) {
+        if (evt.oldIndex === evt.newIndex) return;
+        const queue = await storage.getQueue();
+        const movedItem = queue.splice(evt.oldIndex, 1)[0];
+        queue.splice(evt.newIndex, 0, movedItem);
+        await storage.updateQueue(queue);
+      }
+    });
+  }
+
+  // Initialize Drag-and-Drop Reordering
+  if (typeof Sortable !== 'undefined') {
+    Sortable.create(elements.queueList, {
+      handle: '.queue-item-drag-handle',
+      animation: 150,
+      ghostClass: 'queue-item-ghost',
+      onEnd: async function (evt) {
+        if (evt.oldIndex === evt.newIndex) return;
+        const queue = await storage.getQueue();
+        const movedItem = queue.splice(evt.oldIndex, 1)[0];
+        queue.splice(evt.newIndex, 0, movedItem);
+        await storage.updateQueue(queue);
+      }
+    });
+  }
+
   // Set up reactive UI updates based on storage changes (SSOT)
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area === 'local') {
@@ -359,28 +407,10 @@ async function handleQueueItemAction(e) {
       await new Promise(resolve => setTimeout(resolve, 200));
     }
     await storage.removeFromQueue(itemId);
-  } else if (action === 'move-up') {
-    await handleReorderItem(itemId, -1);
-  } else if (action === 'move-down') {
-    await handleReorderItem(itemId, 1);
   }
 }
 
-async function handleReorderItem(id, direction) {
-  try {
-    const queue = await storage.getQueue();
-    const currentIndex = queue.findIndex(item => item.id === id);
-    if (currentIndex === -1) return;
 
-    const newIndex = currentIndex + direction;
-    if (newIndex < 0 || newIndex >= queue.length) return;
-
-    [queue[currentIndex], queue[newIndex]] = [queue[newIndex], queue[currentIndex]];
-    await storage.updateQueue(queue);
-  } catch (error) {
-    showStatusMessage('Failed to reorder item', 'error');
-  }
-}
 
 async function handleClearAll() {
   const queue = await storage.getQueue();
@@ -621,15 +651,12 @@ function renderQueue(queueData) {
 
     return `
       <div class="queue-item" data-id="${escapeHtml(item.id)}" role="listitem">
+        <span class="queue-item-drag-handle" style="cursor: grab; font-size: 1.2rem; color: var(--color-text-tertiary); padding-right: 8px;" title="Drag to reorder">&#9776;</span>
         <span class="queue-item-number">${index + 1}</span>
         <div class="queue-item-content">
           <p class="queue-item-text" title="${escapeHtml(item.prompt)}">${escapeHtml(truncatedPrompt)}</p>
         </div>
         <div class="queue-item-actions">
-          <div class="queue-item-reorder">
-            <button class="btn btn-icon btn-reorder" data-action="move-up" title="Move up" ${isFirst ? 'disabled' : ''}>&#9650;</button>
-            <button class="btn btn-icon btn-reorder" data-action="move-down" title="Move down" ${isLast ? 'disabled' : ''}>&#9660;</button>
-          </div>
           <button class="btn btn-icon btn-delete" data-action="delete" title="Delete">&#10005;</button>
         </div>
       </div>
