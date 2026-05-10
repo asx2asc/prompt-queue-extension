@@ -595,8 +595,8 @@ class QueueProcessor {
 
     if (varsToCompile && varsToCompile.length > 0) {
       for (const v of varsToCompile) {
-        const safeKey = v.replace(/[-\/\\^$*+?.()|\[\]{}]/g, '\\$&');
-        const regex = new RegExp(`\\{\\\{\\s*${safeKey}\\s*\\}\\\}`, 'g');
+        const safeKey = v.replace(/[-\/\^$*+?.()|[\]{}]/g, '\$&');
+        const regex = new RegExp(`\{\{\s*${safeKey}\s*\}\}`, 'g');
         const replacementValue = (runtimeVars[nextItem.id] && runtimeVars[nextItem.id][v]) ? runtimeVars[nextItem.id][v] : '';
         resolvedPromptText = resolvedPromptText.replace(regex, replacementValue);
       }
@@ -759,8 +759,8 @@ class QueueProcessor {
 
     if (varsToCompile && varsToCompile.length > 0) {
       for (const v of varsToCompile) {
-        const safeKey = v.replace(/[-\/\\^$*+?.()|\[\]{}]/g, '\\$&');
-        const regex = new RegExp(`\\{\\\{\\s*${safeKey}\\s*\\}\\\}`, 'g');
+        const safeKey = v.replace(/[-\/\^$*+?.()|[\]{}]/g, '\$&');
+        const regex = new RegExp(`\{\{\s*${safeKey}\s*\}\}`, 'g');
         const replacementValue = (runtimeVars[nextItem.id] && runtimeVars[nextItem.id][v]) ? runtimeVars[nextItem.id][v] : '';
         resolvedPromptText = resolvedPromptText.replace(regex, replacementValue);
       }

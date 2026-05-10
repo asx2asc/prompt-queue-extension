@@ -82,8 +82,10 @@
         </div>
       </section>
 
-    <section class="settings-section execution-footer" style="padding: 12px 16px; display: flex; flex-direction: column; gap: 10px;">
-        <div class="toggle-container">
+    <!-- Settings Section (Relocated as Footer) -->
+<!-- Settings Section -->
+      <section class="settings-section execution-footer">
+        <div class="toggle-container" style="margin-bottom: 10px;">
           <label class="toggle-label" for="auto-send-toggle">Auto-send enabled</label>
           <label class="toggle-switch">
             <input type="checkbox" id="auto-send-toggle" role="switch" aria-checked="false">

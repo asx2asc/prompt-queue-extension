@@ -916,11 +916,43 @@ width: auto;
   white-space: nowrap;
   border: 0;
 }
+/* --------------------------------------------------------------------------
+   Execution Footer
+   -------------------------------------------------------------------------- */
+.execution-footer {
+  margin-top: auto;
+  border-top: 1px solid var(--color-border-light);
+  border-bottom: none;
+  position: sticky;
+  bottom: 0;
+  background-color: var(--color-bg-primary);
+  z-index: 10;
+  box-shadow: 0 -4px 6px -4px rgba(0, 0, 0, 0.05);
+}
 
+/* --------------------------------------------------------------------------
+   Execution Footer
+   -------------------------------------------------------------------------- */
+.execution-footer {
+  margin-top: auto;
+  border-top: 1px solid var(--color-border-light);
+  background-color: var(--color-bg-primary);
+  z-index: 10;
+  flex-shrink: 0;
+  box-shadow: 0 -8px 16px rgba(0, 0, 0, 0.05);
+}
 
-
-
-
+/* --------------------------------------------------------------------------
+   Execution Footer
+   -------------------------------------------------------------------------- */
+.execution-footer {
+  margin-top: auto;
+  border-top: 1px solid var(--color-border-light);
+  background-color: var(--color-bg-primary);
+  z-index: 10;
+  flex-shrink: 0;
+  box-shadow: 0 -8px 16px rgba(0, 0, 0, 0.05);
+}
 
 
 /* --------------------------------------------------------------------------
@@ -1036,18 +1068,4 @@ width: auto;
   outline: none;
   margin-top: -2px;
   margin-left: -4px;
-}
-
-/* --------------------------------------------------------------------------
-   Execution Footer
-   -------------------------------------------------------------------------- */
-.execution-footer {
-  margin-top: auto;
-  border-top: 1px solid var(--color-border-light);
-  border-bottom: none;
-  position: sticky;
-  bottom: 0;
-  background-color: var(--color-bg-primary);
-  z-index: 10;
-  box-shadow: 0 -4px 6px -4px rgba(0, 0, 0, 0.05);
 }
