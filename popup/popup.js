@@ -320,6 +320,10 @@ function initializeElements() {
 
   elements.queueList = getRequiredElement('#queue-list');
   elements.queueCount = getRequiredElement('#queue-count');
+  elements.progressContainer = document.getElementById('execution-progress-container');
+  elements.progressPhase = document.getElementById('progress-phase-text');
+  elements.progressTime = document.getElementById('progress-time-text');
+  elements.progressFill = document.getElementById('progress-bar-fill');
   elements.queueEmpty = getRequiredElement('.queue-empty');
   elements.saveQueueBtn = getRequiredElement('#save-queue-btn');
   elements.clearAllBtn = getRequiredElement('#clear-all-btn');
@@ -975,10 +979,11 @@ function lockActiveQueueItem(isLocked) {
   }
 }
 
-function updateStatusIndicator(status) {
-  if (!STATUS_MESSAGES[status]) return;
-  elements.statusIndicator.setAttribute('data-status', status);
-  elements.statusText.textContent = STATUS_MESSAGES[status];
+function updateStatusIndicator(status, customText = null) {
+  if (!STATUS_MESSAGES[status] && status !== 'sending_prompt') return;
+  const uiStatus = status === 'sending_prompt' ? 'sending' : status;
+  elements.statusIndicator.setAttribute('data-status', uiStatus);
+  elements.statusText.textContent = customText || STATUS_MESSAGES[status];
 }
 
 let toastTimeoutId = null;
@@ -1055,7 +1060,19 @@ function setupMessageListener() {
         updateStatusIndicator(message.status);
         break;
       case 'PROMPT_SENT':
-      case 'SENDING_PROMPT':
+      case 'COUNTDOWN_UPDATE':
+      if (elements.progressContainer) {
+        elements.progressContainer.style.display = 'block';
+        elements.progressPhase.textContent = payload.phase + '...';
+        const m = Math.floor(payload.remaining / 60);
+        const s = payload.remaining % 60;
+        elements.progressTime.textContent = (m > 0 ? m + 'm ' : '') + s + 's';
+        const percent = payload.total > 0 ? ((payload.total - payload.remaining) / payload.total) * 100 : 100;
+        elements.progressFill.style.width = percent + '%';
+      }
+      updateStatusIndicator('sending_prompt', `${payload.phase}...`);
+      break;
+    case 'SENDING_PROMPT':
       case 'QUEUE_EMPTY':
         if (message.type === 'QUEUE_EMPTY') {
           updateStatusIndicator('idle');
@@ -1099,6 +1116,18 @@ function handleStateUpdate(payload) {
 
   switch (payload.type) {
     
+    case 'COUNTDOWN_UPDATE':
+      if (elements.progressContainer) {
+        elements.progressContainer.style.display = 'block';
+        elements.progressPhase.textContent = payload.phase + '...';
+        const m = Math.floor(payload.remaining / 60);
+        const s = payload.remaining % 60;
+        elements.progressTime.textContent = (m > 0 ? m + 'm ' : '') + s + 's';
+        const percent = payload.total > 0 ? ((payload.total - payload.remaining) / payload.total) * 100 : 100;
+        elements.progressFill.style.width = percent + '%';
+      }
+      updateStatusIndicator('sending_prompt', `${payload.phase}...`);
+      break;
     case 'SENDING_PROMPT':
       lockActiveQueueItem(true);
       updateStatusIndicator('sending_prompt');
@@ -1129,16 +1158,25 @@ function handleStateUpdate(payload) {
       break;
     case 'QUEUE_EMPTY':
       updateStatusIndicator('idle');
+      if (elements.progressContainer) elements.progressContainer.style.display = 'none';
       showStatusMessage('All prompts sent!', 'success');
       currentSettings.autoSendEnabled = false;
       storage.saveSettings(currentSettings);
       break;
     case 'PROCESSING_STOPPED':
+      if (elements.progressContainer) elements.progressContainer.style.display = 'none';
       lockActiveQueueItem(false);
       updateStatusIndicator('idle');
+      if (elements.stopQueueBtn) {
+        elements.stopQueueBtn.disabled = false;
+        elements.stopQueueBtn.innerHTML = '<span class="btn-icon-left">&#9632;</span> Stop Auto-Run';
+        elements.stopQueueBtn.style.display = 'none';
+      }
+      storage.getQueue().then(q => updateSendNextButtonState(q.length));
       break;
     case 'PROCESSING_ERROR':
       lockActiveQueueItem(false);
+      if (elements.progressContainer) elements.progressContainer.style.display = 'none';
 
       updateStatusIndicator('idle');
       showStatusMessage(payload.error || 'Processing error', 'error');

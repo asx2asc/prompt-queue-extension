@@ -465,6 +465,13 @@ function setupMessageListener(handler) {
       return false;
     }
 
+    if (message.type === 'ABORT_PROCESSING') {
+      window.PromptQueueCommon.isProcessing = false;
+      log.warn('Received immediate ABORT_PROCESSING signal from Service Worker.');
+      sendResponse({ success: true, aborted: true });
+      return true;
+    }
+
     log.debug('Message received from background:', message);
 
     // Handle async response
@@ -711,6 +718,33 @@ function sleep(ms) {
 }
 
 /**
+ * Interruptible sleep with real-time countdown broadcasts (Includes Total for Progress Bar Math)
+ */
+function sleepWithCountdown(ms, phaseName) {
+  return new Promise((resolve, reject) => {
+    const endTime = Date.now() + ms;
+    const initialSeconds = Math.ceil(ms / 1000);
+    sendToBackground('COUNTDOWN_UPDATE', { phase: phaseName, remaining: initialSeconds, total: initialSeconds }).catch(() => {});
+
+    const interval = setInterval(() => {
+      if (!window.PromptQueueCommon.isProcessing) {
+        clearInterval(interval);
+        reject(new Error('Aborted by user Kill Switch.'));
+        return;
+      }
+      const remainingMs = endTime - Date.now();
+      if (remainingMs <= 0) {
+        clearInterval(interval);
+        resolve();
+      } else {
+        const remainingSec = Math.ceil(remainingMs / 1000);
+        sendToBackground('COUNTDOWN_UPDATE', { phase: phaseName, remaining: remainingSec, total: initialSeconds }).catch(() => {});
+      }
+    }, 500); // 500ms polling for instant interrupt response and smooth UI
+  });
+}
+
+/**
  * Retry a function with exponential backoff and jitter
  *
  * @param {Function} fn - Async function to retry
@@ -851,6 +885,7 @@ window.PromptQueueCommon = {
   isNavigating,
 
   // Helpers
+  sleepWithCountdown,
   sleep,
   retry,
   retryDOMOperation,

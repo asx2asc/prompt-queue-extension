@@ -995,6 +995,10 @@ class TabTracker {
         const currentTabId = stateManager.get('currentTabId');
         if (tabId === currentTabId) {
           queueProcessor.stop();
+        const procTabId = focusManager.getProcessingTab() || stateManager.get('currentTabId');
+        if (procTabId) {
+          chrome.tabs.sendMessage(procTabId, { type: 'ABORT_PROCESSING', source: 'background' }).catch(() => {});
+        }
           notifyPopup({ type: 'PROCESSING_STOPPED', reason: 'tab_navigated_away' });
         }
       }
@@ -1030,6 +1034,10 @@ class TabTracker {
     const processingTabId = focusManager.getProcessingTab();
     if (tabId === processingTabId) {
       queueProcessor.stop();
+        const procTabId = focusManager.getProcessingTab() || stateManager.get('currentTabId');
+        if (procTabId) {
+          chrome.tabs.sendMessage(procTabId, { type: 'ABORT_PROCESSING', source: 'background' }).catch(() => {});
+        }
       focusManager.clearProcessingTab();
       notifyPopup({ type: 'PROCESSING_STOPPED', reason: 'tab_closed' });
     }
@@ -1325,6 +1333,10 @@ class MessageRouter {
       case PopupMessageType.STOP_PROCESSING:
         logger.info('Stop processing explicitly requested');
         queueProcessor.stop();
+        const procTabId = focusManager.getProcessingTab() || stateManager.get('currentTabId');
+        if (procTabId) {
+          chrome.tabs.sendMessage(procTabId, { type: 'ABORT_PROCESSING', source: 'background' }).catch(() => {});
+        }
         stateManager.set('autoSendEnabled', false);
         chrome.storage.local.get('settings').then(stored => {
           const updatedSettings = stored.settings || {};
@@ -1437,6 +1449,10 @@ class MessageRouter {
       case 'GENERATION_COMPLETE':
         logger.info('Generation complete in tab', tabId, payload);
         await queueProcessor.onGenerationComplete(payload);
+        return { acknowledged: true };
+        
+      case 'COUNTDOWN_UPDATE':
+        notifyPopup({ type: 'STATE_UPDATE', payload: { type: 'COUNTDOWN_UPDATE', phase: payload.phase, remaining: payload.remaining, total: payload.total } });
         return { acknowledged: true };
         
       case 'ERROR':

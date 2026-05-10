@@ -310,8 +310,12 @@
       }
 
       log.info(`Button interactive. Execution pause: ${currentExecDelay}ms.`);
-    await sleep(currentExecDelay);
-    if (!window.PromptQueueCommon.isProcessing) { log.warn('Execution aborted by user Kill Switch.'); return false; }
+    try {
+      await window.PromptQueueCommon.sleepWithCountdown(currentExecDelay, 'Executing');
+    } catch (e) {
+      log.warn(e.message);
+      return false;
+    }
 
     // Click the send button
       const clicked = clickButton(sendButton);
@@ -365,8 +369,13 @@
 
           currentExecDelay = payload.executionDelay || 180000;
           log.info(`Text injected. Formulation pause: ${payload.formulationDelay || 60000}ms.`);
-          await sleep(payload.formulationDelay || 60000);
-          if (!window.PromptQueueCommon.isProcessing) { log.warn('Execution aborted by user Kill Switch.'); window.PromptQueueCommon.isProcessing = false; return { error: 'Aborted by user' }; }
+          try {
+            await window.PromptQueueCommon.sleepWithCountdown(payload.formulationDelay || 60000, 'Formulating');
+          } catch (e) {
+            window.PromptQueueCommon.isProcessing = false;
+            log.warn(e.message);
+            return { error: 'Aborted by user' };
+          }
 
           // Submit it
           const submitted = await submitPrompt();
