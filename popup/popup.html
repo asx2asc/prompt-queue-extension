@@ -44,7 +44,15 @@
           rows=" 2"
           aria-describedby="prompt-hint"
         ></textarea>
-        <span id="prompt-hint" class="input-hint">Press Ctrl+Enter to quickly add</span>
+        <div class="prompt-footer">
+          <div class="prompt-hint-left">
+            <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H7a2 2 0 0 0-2 2v5a2 2 0 0 1-2 2 2 2 0 0 1 2 2v5c0 1.1.9 2 2 2h1"></path><path d="M16 21h1a2 2 0 0 0 2-2v-5c0-1.1.9-2 2-2a2 2 0 0 1-2-2V5a2 2 0 0 0-2-2h-1"></path></svg>
+            <span>Type <code>{{var}}</code> for placeholders</span>
+          </div>
+          <div class="prompt-hint-right">
+            <kbd>Ctrl</kbd> <kbd>↵</kbd> Add
+          </div>
+        </div>
         <button id="add-to-queue-btn" class="btn btn-secondary" type="button">
           Add to Queue
         </button>
@@ -56,11 +64,11 @@
       <section class="queue-section">
         <div class="queue-header">
           <h2 class="queue-title">Queue <span id="queue-count" class="queue-count">(0)</span></h2>
-          <div style="display: flex; gap: 8px; justify-content: space-between; width: 100%;">
+          <div class="queue-actions" style="display: flex; gap: var(--spacing-sm); align-items: center;">
             <button id="save-queue-btn" class="btn btn-secondary btn-small" type="button" disabled>
               Save Queue
             </button>
-            <button id="clear-all-btn" class="btn btn-danger btn-small" type="button" disabled style="background-color: var(--color-error-bg);">
+            <button id="clear-all-btn" class="btn btn-danger btn-small" type="button" disabled>
               Clear All
             </button>
           </div>
@@ -119,8 +127,24 @@
 
     <!-- Status Messages -->
     <div id="status-message" class="status-message" role="alert" aria-live="polite" hidden></div>
-  </div>
 
+    <!-- Runtime Variable Injection Modal -->
+    <div id="variable-modal" class="modal-overlay" hidden>
+      <div class="modal-content" role="dialog" aria-labelledby="modal-title">
+        <h2 id="modal-title" class="header-title" style="padding: 0; border: none; margin-bottom: var(--spacing-xs);">Input Required</h2>
+        <p class="input-hint" style="margin-top: 0; margin-bottom: var(--spacing-lg);">Please provide values for the following placeholders to continue.</p>
+        <form id="variable-form">
+          <div id="variable-inputs-container">
+            <!-- Populated dynamically via JS -->
+          </div>
+          <div style="display: flex; gap: var(--spacing-sm); margin-top: var(--spacing-lg);">
+            <button type="submit" class="btn btn-primary">Continue Chain</button>
+            <button type="button" id="cancel-variable-btn" class="btn btn-secondary">Pause Queue</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
   <script src="sortable.min.js"></script>
   <script src="sortable.min.js"></script>
   <script src="sortable.min.js"></script>

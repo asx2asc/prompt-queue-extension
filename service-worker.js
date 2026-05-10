@@ -32,7 +32,8 @@ const SUPPORTED_SITES = {
 const ProcessingState = {
   IDLE: 'idle',
   WAITING_FOR_RESPONSE: 'waiting_for_response',
-  SENDING_PROMPT: 'sending_prompt'
+  SENDING_PROMPT: 'sending_prompt',
+  AWAITING_USER_INPUT: 'awaiting_user_input'
 };
 
 /**
@@ -194,6 +195,12 @@ class StateManager {
       }
       if (!this._state.has('tabSiteMap')) {
         this._state.set('tabSiteMap', {});
+      }
+      if (!this._state.has('runtimeVariables')) {
+        this._state.set('runtimeVariables', {});
+      }
+      if (!this._state.has('runtimeVariables')) {
+        this._state.set('runtimeVariables', {});
       }
 
       logger.info('State initialized', Object.fromEntries(this._state));
@@ -410,8 +417,12 @@ async function sendToContentScript(tabId, message) {
     logger.debug(`Response from content script (tab ${tabId}):`, response);
     return response;
   } catch (error) {
-    logger.error(`Failed to send message to tab ${tabId}:`, error);
-    throw error;
+      if (error.message && error.message.includes('Receiving end does not exist')) {
+        logger.debug(`Could not establish connection to tab ${tabId} (Content script not ready)`);
+      } else {
+        logger.error(`Failed to send message to tab ${tabId}:`, error);
+      }
+      throw error;
   }
 }
 
@@ -473,18 +484,8 @@ class QueueProcessor {
       return;
     }
 
-    // Ensure we have the latest queue from storage
-    try {
-      const stored = await chrome.storage.local.get(['promptQueue', 'autoSendEnabled']);
-      if (stored.promptQueue) {
-        stateManager.set('promptQueue', stored.promptQueue, false);
-      }
-      if (typeof stored.autoSendEnabled === 'boolean') {
-        stateManager.set('autoSendEnabled', stored.autoSendEnabled, false);
-      }
-    } catch (e) {
-      logger.warn('Could not refresh from storage:', e);
-    }
+    // Removed asynchronous storage fetch to prevent race conditions.
+    // Relying strictly on the synchronous in-memory stateManager as the Single Source of Truth.
 
     const autoSendEnabled = stateManager.get('autoSendEnabled');
     if (!autoSendEnabled) {
@@ -508,35 +509,18 @@ class QueueProcessor {
     logger.info('processNextItem called');
 
     const autoSendEnabled = stateManager.get('autoSendEnabled');
-    // Use processingTabId (the tab where we started) instead of currentTabId
     const processingTabId = focusManager.getProcessingTab();
     const tabSiteMap = stateManager.get('tabSiteMap') || {};
-    const queue = stateManager.get('promptQueue') || [];
-
-    logger.info('processNextItem state:', {
-      autoSendEnabled,
-      processingTabId,
-      tabSiteMap: Object.keys(tabSiteMap),
-      queueLength: queue.length
-    });
+    const queue = stateManager.get('promptQueue') ||[];
 
     if (!autoSendEnabled) {
-      logger.info('Auto-send disabled, stopping queue processing');
       stateManager.set('processingState', ProcessingState.IDLE);
       focusManager.clearProcessingTab();
       notifyPopup({ type: 'PROCESSING_STOPPED', reason: 'auto_send_disabled' });
       return;
     }
 
-    if (!processingTabId) {
-      logger.warn('No processing tab set');
-      stateManager.set('processingState', ProcessingState.IDLE);
-      notifyPopup({ type: 'PROCESSING_STOPPED', reason: 'no_active_tab' });
-      return;
-    }
-
-    if (!tabSiteMap[processingTabId]) {
-      logger.warn('Processing tab is no longer on a supported site');
+    if (!processingTabId || !tabSiteMap[processingTabId]) {
       stateManager.set('processingState', ProcessingState.IDLE);
       focusManager.clearProcessingTab();
       notifyPopup({ type: 'PROCESSING_STOPPED', reason: 'unsupported_site' });
@@ -544,60 +528,88 @@ class QueueProcessor {
     }
 
     if (queue.length === 0) {
-      logger.info('Queue is empty, processing complete');
       stateManager.set('processingState', ProcessingState.IDLE);
-      // Auto-disable auto-send when queue is empty
       stateManager.set('autoSendEnabled', false);
+      stateManager.set('runtimeVariables', {}, false); // Clear context
       focusManager.clearProcessingTab();
       notifyPopup({ type: 'QUEUE_EMPTY', autoSendDisabled: true });
       return;
     }
 
-    // Get the first item (FIFO)
+    // BATCH SCAN: Aggregate missing variables scoping directly to prompt IDs
+    const runtimeVars = stateManager.get('runtimeVariables') || {};
+    const neededPrompts =[];
+    
+    queue.forEach(item => {
+      let vars = item.variables;
+      if (!vars || !Array.isArray(vars)) {
+        const matches = [...item.prompt.matchAll(/\{\{([^}]+)\}\}/g)];
+        vars = matches.map(match => match[1].trim());
+      }
+      
+      if (vars && vars.length > 0) {
+        const missingForThisPrompt = vars.filter(v => !runtimeVars[item.id] || !runtimeVars[item.id][v] || runtimeVars[item.id][v].trim() === '');
+        if (missingForThisPrompt.length > 0) {
+           neededPrompts.push({ id: item.id, prompt: item.prompt, variables: missingForThisPrompt });
+        }
+      }
+    });
+
+    if (neededPrompts.length > 0) {
+      logger.info('Manual execution requires user input, yielding thread');
+      stateManager.set('processingState', ProcessingState.AWAITING_USER_INPUT);
+      stateManager.set('pendingResumeAction', 'manual', false);
+      
+      notifyPopup({ 
+        type: 'PROMPT_NEEDS_INPUT', 
+        neededPrompts: neededPrompts 
+      });
+      return { sent: false, pending: true };
+    }
+
     const nextItem = queue[0];
-    logger.info('Processing next queue item:', nextItem);
+    let resolvedPromptText = nextItem.prompt;
+
+    // EPHEMERAL COMPILATION
+    let varsToCompile = nextItem.variables;
+    if (!varsToCompile || !Array.isArray(varsToCompile)) {
+      const matches =[...nextItem.prompt.matchAll(/\{\{([^}]+)\}\}/g)];
+      varsToCompile = matches.map(match => match[1].trim());
+    }
+
+    if (varsToCompile && varsToCompile.length > 0) {
+      for (const v of varsToCompile) {
+        const safeKey = v.replace(/[-\/\^$*+?.()|[\]{}]/g, '\$&');
+        const regex = new RegExp(`\{\{\s*${safeKey}\s*\}\}`, 'g');
+        const replacementValue = (runtimeVars[nextItem.id] && runtimeVars[nextItem.id][v]) ? runtimeVars[nextItem.id][v] : '';
+        resolvedPromptText = resolvedPromptText.replace(regex, replacementValue);
+      }
+    }
 
     try {
-      // Update state to sending
       stateManager.set('processingState', ProcessingState.SENDING_PROMPT);
-      notifyPopup({ type: 'SENDING_PROMPT', prompt: nextItem });
+      notifyPopup({ type: 'SENDING_PROMPT', prompt: { ...nextItem, prompt: resolvedPromptText } });
 
-      // Send to content script on the processing tab (not necessarily the active tab)
       const response = await sendToContentScript(processingTabId, {
         type: OutgoingMessageType.INJECT_PROMPT,
-        payload: {
-          prompt: nextItem.prompt || nextItem,
-          id: nextItem.id
-        }
+        payload: { prompt: resolvedPromptText, id: nextItem.id }
       });
 
       if (response && response.success) {
         logger.info('Prompt injected successfully');
-
-        // Update state to waiting for response
         stateManager.set('processingState', ProcessingState.WAITING_FOR_RESPONSE);
-
-        // Remove sent item from queue
+        
         const updatedQueue = queue.slice(1);
         stateManager.set('promptQueue', updatedQueue);
-
-        // Notify popup of queue change
-        notifyPopup({
-          type: 'QUEUE_ITEM_SENT',
-          item: nextItem,
-          remainingCount: updatedQueue.length
-        });
+        
+        notifyPopup({ type: 'QUEUE_ITEM_SENT', item: nextItem, remainingCount: updatedQueue.length });
       } else {
         throw new Error(response?.error || 'Failed to inject prompt');
       }
     } catch (error) {
       logger.error('Error processing queue item:', error);
       stateManager.set('processingState', ProcessingState.IDLE);
-      notifyPopup({
-        type: 'PROCESSING_ERROR',
-        error: error.message,
-        item: nextItem
-      });
+      notifyPopup({ type: 'PROCESSING_ERROR', error: error.message, item: nextItem });
     }
   }
 
@@ -649,62 +661,84 @@ class QueueProcessor {
    */
   async sendNextItem() {
     const currentState = stateManager.get('processingState');
-    if (currentState !== ProcessingState.IDLE) {
-      logger.warn('Cannot send next - not in idle state');
-      return { sent: false, error: 'Currently processing another prompt' };
-    }
+    if (currentState !== ProcessingState.IDLE) return { sent: false, error: 'Currently processing another prompt' };
 
-    // For manual sends, use the current active tab
     const currentTabId = stateManager.get('currentTabId');
-    if (!currentTabId) {
-      logger.warn('No active tab to send prompt');
-      return { sent: false, error: 'No active LLM tab' };
-    }
-
     const tabSiteMap = stateManager.get('tabSiteMap') || {};
-    if (!tabSiteMap[currentTabId]) {
-      logger.warn('Current tab is not on a supported site');
-      return { sent: false, error: 'Navigate to a supported LLM site' };
-    }
+    if (!currentTabId || !tabSiteMap[currentTabId]) return { sent: false, error: 'Navigate to a supported LLM site' };
 
-    const queue = stateManager.get('promptQueue') || [];
-    if (queue.length === 0) {
-      logger.info('Queue is empty');
-      return { sent: false, error: 'Queue is empty' };
+    const queue = stateManager.get('promptQueue') ||[];
+    if (queue.length === 0) return { sent: false, error: 'Queue is empty' };
+
+    focusManager.setProcessingTab(currentTabId);
+
+    // BATCH SCAN: Aggregate missing variables scoping directly to prompt IDs
+    const runtimeVars = stateManager.get('runtimeVariables') || {};
+    const neededPrompts =[];
+    
+    queue.forEach(item => {
+      let vars = item.variables;
+      if (!vars || !Array.isArray(vars)) {
+        const matches = [...item.prompt.matchAll(/\{\{([^}]+)\}\}/g)];
+        vars = matches.map(match => match[1].trim());
+      }
+      
+      if (vars && vars.length > 0) {
+        const missingForThisPrompt = vars.filter(v => !runtimeVars[item.id] || !runtimeVars[item.id][v] || runtimeVars[item.id][v].trim() === '');
+        if (missingForThisPrompt.length > 0) {
+           neededPrompts.push({ id: item.id, prompt: item.prompt, variables: missingForThisPrompt });
+        }
+      }
+    });
+
+    if (neededPrompts.length > 0) {
+      logger.info('Manual execution requires user input, yielding thread');
+      stateManager.set('processingState', ProcessingState.AWAITING_USER_INPUT);
+      stateManager.set('pendingResumeAction', 'manual', false);
+      
+      notifyPopup({ 
+        type: 'PROMPT_NEEDS_INPUT', 
+        neededPrompts: neededPrompts 
+      });
+      return { sent: false, pending: true };
     }
 
     const nextItem = queue[0];
-    logger.info('Manually sending next queue item:', nextItem);
+    let resolvedPromptText = nextItem.prompt;
 
-    // For manual sends, set the processing tab to the current tab
-    focusManager.setProcessingTab(currentTabId);
+    // EPHEMERAL COMPILATION
+    let varsToCompile = nextItem.variables;
+    if (!varsToCompile || !Array.isArray(varsToCompile)) {
+      const matches =[...nextItem.prompt.matchAll(/\{\{([^}]+)\}\}/g)];
+      varsToCompile = matches.map(match => match[1].trim());
+    }
+
+    if (varsToCompile && varsToCompile.length > 0) {
+      for (const v of varsToCompile) {
+        const safeKey = v.replace(/[-\/\^$*+?.()|[\]{}]/g, '\$&');
+        const regex = new RegExp(`\{\{\s*${safeKey}\s*\}\}`, 'g');
+        const replacementValue = (runtimeVars[nextItem.id] && runtimeVars[nextItem.id][v]) ? runtimeVars[nextItem.id][v] : '';
+        resolvedPromptText = resolvedPromptText.replace(regex, replacementValue);
+      }
+    }
 
     try {
       stateManager.set('processingState', ProcessingState.SENDING_PROMPT);
-      notifyPopup({ type: 'SENDING_PROMPT', prompt: nextItem });
+      notifyPopup({ type: 'SENDING_PROMPT', prompt: { ...nextItem, prompt: resolvedPromptText } });
 
       const response = await sendToContentScript(currentTabId, {
         type: OutgoingMessageType.INJECT_PROMPT,
-        payload: {
-          prompt: nextItem.prompt || nextItem,
-          id: nextItem.id
-        }
+        payload: { prompt: resolvedPromptText, id: nextItem.id }
       });
 
       if (response && response.success) {
         logger.info('Prompt injected successfully (manual send)');
         stateManager.set('processingState', ProcessingState.WAITING_FOR_RESPONSE);
-
-        // Remove sent item from queue
+        
         const updatedQueue = queue.slice(1);
         stateManager.set('promptQueue', updatedQueue);
-
-        notifyPopup({
-          type: 'QUEUE_ITEM_SENT',
-          item: nextItem,
-          remainingCount: updatedQueue.length
-        });
-
+        
+        notifyPopup({ type: 'QUEUE_ITEM_SENT', item: nextItem, remainingCount: updatedQueue.length });
         return { sent: true, item: nextItem };
       } else {
         throw new Error(response?.error || 'Failed to inject prompt');
@@ -712,11 +746,7 @@ class QueueProcessor {
     } catch (error) {
       logger.error('Error sending next item:', error);
       stateManager.set('processingState', ProcessingState.IDLE);
-      notifyPopup({
-        type: 'PROCESSING_ERROR',
-        error: error.message,
-        item: nextItem
-      });
+      notifyPopup({ type: 'PROCESSING_ERROR', error: error.message, item: nextItem });
       return { sent: false, error: error.message };
     }
   }
@@ -1243,8 +1273,43 @@ class MessageRouter {
         // Send just the next item without enabling auto-send
         return await queueProcessor.sendNextItem();
 
+      case 'CLEAR_RUNTIME_VARIABLES':
+        logger.info('Clearing runtime variables for fresh chain load');
+        stateManager.set('runtimeVariables', {}, false);
+        return { cleared: true };
+
+      case 'SUBMIT_VARIABLES':
+        logger.info('Received runtime variables, merging into nested runtime context');
+        
+        if (stateManager.get('processingState') !== ProcessingState.AWAITING_USER_INPUT) {
+          return { error: 'Not currently awaiting input' };
+        }
+        
+        // Push user's form submissions into the nested memory bank
+        const currentVars = stateManager.get('runtimeVariables') || {};
+        const incomingVars = payload.variables || {};
+        const newVars = { ...currentVars };
+        
+        for (const promptId in incomingVars) {
+           newVars[promptId] = { ...(newVars[promptId] || {}), ...incomingVars[promptId] };
+        }
+        
+        stateManager.set('runtimeVariables', newVars, false);
+        
+        // Reset state and resume execution pipeline
+        stateManager.set('processingState', ProcessingState.IDLE);
+        
+        const resumeAction = stateManager.get('pendingResumeAction');
+        if (resumeAction === 'manual') {
+          return await queueProcessor.sendNextItem();
+        } else {
+          // CRITICAL FIX: Use startProcessing() to correctly resume the automated queue loop
+          queueProcessor.startProcessing(); 
+          return { resumed: true };
+        }
+
       default:
-        logger.warn('Unknown popup message type:', type);
+        logger.warn('Unknown content script message type:', type);
         return { error: 'Unknown message type' };
     }
   }
@@ -1259,61 +1324,32 @@ class MessageRouter {
    */
   async _handleContentScriptMessage(type, payload, tabId) {
     switch (type) {
-      case ContentMessageType.SITE_READY:
-        // Content script loaded and detected the site
-        const siteType = payload?.siteType;
-        if (siteType && tabId) {
-          const tabSiteMap = { ...stateManager.get('tabSiteMap') };
-          tabSiteMap[tabId] = siteType;
-          stateManager.set('tabSiteMap', tabSiteMap);
-          logger.info(`Content script ready on tab ${tabId}: ${siteType}`);
-
-          // Notify popup
-          notifyPopup({ type: 'SITE_CONNECTED', tabId, siteType });
-        }
+      case 'SITE_READY':
+        logger.info(`Site ready in tab ${tabId}:`, payload.siteType);
+        const tabSiteMap = stateManager.get('tabSiteMap') || {};
+        tabSiteMap[tabId] = payload.siteType;
+        stateManager.set('tabSiteMap', tabSiteMap);
         return { acknowledged: true };
-
-      case ContentMessageType.GENERATION_STARTED:
-        // LLM started generating a response
-        logger.info('Generation started on tab:', tabId);
+        
+      case 'GENERATION_STARTED':
+        logger.info('Generation started in tab', tabId);
         stateManager.set('processingState', ProcessingState.WAITING_FOR_RESPONSE);
-        notifyPopup({ type: 'GENERATION_STARTED', tabId });
+        notifyPopup({ type: 'GENERATION_STARTED' });
         return { acknowledged: true };
-
-      case ContentMessageType.GENERATION_COMPLETE:
-        // LLM finished generating
-        logger.info('Generation complete on tab:', tabId);
+        
+      case 'GENERATION_COMPLETE':
+        logger.info('Generation complete in tab', tabId);
         await queueProcessor.onGenerationComplete();
         return { acknowledged: true };
-
-      case ContentMessageType.ERROR:
-        // Handle intentional lifecycle teardowns sent as "errors" by the content script
-        // ENHANCED: Explicitly check for payload.isNavigating to catch all cached payload formats
-        if (payload && (payload.type === 'navigation' || payload.type === 'visibility' || payload.isNavigating)) {
-          logger.info(`Content script lifecycle event: ${payload.message}`);
+        
+      case 'ERROR':
+        logger.error(`Error from tab ${tabId}:`, payload.message, payload.error);
+        if (stateManager.get('currentTabId') === tabId) {
           stateManager.set('processingState', ProcessingState.IDLE);
-          notifyPopup({
-            type: 'PROCESSING_STOPPED',
-            reason: payload.type === 'navigation' ? 'tab_navigated_away' : 'tab_hidden'
-          });
-          return { acknowledged: true };
+          notifyPopup({ type: 'PROCESSING_ERROR', error: payload.message });
         }
-
-        // Extract properties to prevent [object Object] interpolation during logging
-        // ENHANCED: Removed optional chaining (?.) which can sometimes fail in older service worker contexts
-        const errorMessage = payload && payload.message ? payload.message : 'Unknown error';
-        const errorDetail = payload && payload.error ? payload.error : JSON.stringify(payload);
-
-        logger.error(`Content script error: ${errorMessage}`, errorDetail);
-
-        stateManager.set('processingState', ProcessingState.IDLE);
-        notifyPopup({
-          type: 'CONTENT_SCRIPT_ERROR',
-          tabId,
-          error: errorMessage
-        });
         return { acknowledged: true };
-
+        
       default:
         logger.warn('Unknown content script message type:', type);
         return { error: 'Unknown message type' };

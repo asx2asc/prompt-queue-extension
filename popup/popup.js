@@ -49,7 +49,14 @@ const storage = {
 
   async addToQueue(prompt) {
     const queue = await this.getQueue();
-    const newItem = { id: generateUUID(), prompt: prompt, createdAt: Date.now() };
+    const extractedVariables = [...prompt.matchAll(/\{\{([^}]+)\}\}/g)].map(match => match[1].trim());
+    const uniqueVariables = [...new Set(extractedVariables)];
+    const newItem = { 
+      id: generateUUID(), 
+      prompt: prompt, 
+      variables: uniqueVariables,
+      createdAt: Date.now() 
+    };
     queue.push(newItem);
     await this.updateQueue(queue);
     return queue;
@@ -100,7 +107,10 @@ const storage = {
       id: generateUUID(),
       name: name,
       createdAt: Date.now(),
-      prompts: queueItems.map(item => ({ prompt: item.prompt }))
+      prompts: queueItems.map(item => ({ 
+        prompt: item.prompt,
+        variables: Array.isArray(item.variables) ? item.variables :[]
+      }))
     };
 
     const estimatedSize = JSON.stringify(newChain).length * 2;
@@ -134,6 +144,7 @@ const storage = {
     const newItems = chain.prompts.map(p => ({
       id: generateUUID(),
       prompt: p.prompt,
+      variables: Array.isArray(p.variables) ? p.variables :[],
       createdAt: Date.now()
     }));
 
@@ -205,7 +216,10 @@ const storage = {
         id: (typeof chain.id === 'string' && chain.id.trim() !== '') ? chain.id : generateUUID(),
         name: chain.name.trim(),
         createdAt: (typeof chain.createdAt === 'number') ? chain.createdAt : Date.now(),
-        prompts: validPrompts.map(p => ({ prompt: p.prompt }))
+        prompts: validPrompts.map(p => ({ 
+          prompt: p.prompt,
+          variables: Array.isArray(p.variables) ? p.variables.filter(v => typeof v === 'string') :[]
+        }))
       });
     }
 
@@ -426,6 +440,7 @@ function attachEventListeners() {
 
   // Event Delegation for Queue Items
   elements.queueList.addEventListener('click', handleQueueItemAction);
+  elements.queueList.addEventListener('dblclick', handleQueueItemDoubleClick);
 
   // Event Delegation for Library Cards
   elements.libraryList.addEventListener('click', handleLibraryAction);
@@ -547,9 +562,17 @@ function generateLibraryCardHTML(chain) {
       </div>
       <div class="library-chain-meta">${escapeHtml(promptCount)}</div>
       <div class="library-chain-actions">
-        <button class="btn btn-primary btn-small" data-action="load-overwrite" title="Replace current queue">Overwrite</button>
-        <button class="btn btn-secondary btn-small" data-action="load-append" title="Add to end of current queue">Append</button>
-        <button class="btn btn-danger btn-small btn-icon" data-action="delete" title="Delete chain">&#10005;</button>
+        <button class="btn btn-primary btn-small" data-action="load-overwrite" title="Replace current queue" style="display: flex; align-items: center; justify-content: center; gap: 6px;">
+          <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 2v6h-6"></path><path d="M3 12a9 9 0 0 1 15-6.7L21 8"></path><path d="M3 22v-6h6"></path><path d="M21 12a9 9 0 0 1-15 6.7L3 16"></path></svg>
+          Overwrite
+        </button>
+        <button class="btn btn-secondary btn-small" data-action="load-append" title="Add to end of current queue" style="display: flex; align-items: center; justify-content: center; gap: 6px;">
+          <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+          Append
+        </button>
+        <button class="btn btn-danger btn-small btn-icon" data-action="delete" title="Delete chain">
+          <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path><line x1="10" y1="11" x2="10" y2="17"></line><line x1="14" y1="11" x2="14" y2="17"></line></svg>
+        </button>
       </div>
     </div>
   `;
@@ -602,6 +625,10 @@ async function processLoadChainRequest(chainId, append) {
       await storage.saveSettings(currentSettings);
       notifyServiceWorker(MessageType.TOGGLE_AUTO_SEND, { enabled: false });
       showStatusMessage('Auto-send paused to safely load chain', 'info');
+    }
+
+    if (!append) {
+      notifyServiceWorker('CLEAR_RUNTIME_VARIABLES', {});
     }
 
     const updatedQueue = await storage.loadChainToQueue(chainId, append);
@@ -758,8 +785,11 @@ async function handleSendNext() {
 
     const response = await chrome.runtime.sendMessage({ type: MessageType.SEND_NEXT });
     if (response && response.success) {
-      showStatusMessage('Sending next prompt...', 'info');
-      updateStatusIndicator('sending_prompt');
+      // Prevent overwriting the 'waiting' UI if the service worker explicitly yielded for user input
+      if (!(response.data && response.data.pending)) {
+        showStatusMessage('Sending next prompt...', 'info');
+        updateStatusIndicator('sending_prompt');
+      }
     } else {
       showStatusMessage(response?.error || 'Failed to send prompt', 'error');
     }
@@ -811,7 +841,7 @@ function renderQueue(queueData) {
         <span class="queue-item-drag-handle" style="cursor: grab; font-size: 1.2rem; color: var(--color-text-tertiary); padding-right: 8px;" title="Drag to reorder">&#9776;</span>
         <span class="queue-item-number">${index + 1}</span>
         <div class="queue-item-content">
-          <p class="queue-item-text" title="${escapeHtml(item.prompt)}">${escapeHtml(truncatedPrompt)}</p>
+          <p class=\"queue-item-text\" title=\"Double-click to edit&#10;${escapeHtml(item.prompt)}\" style=\"cursor: text;\">${escapeHtml(truncatedPrompt)}</p>
         </div>
         <div class="queue-item-actions">
           <button class="btn btn-icon btn-delete" data-action="delete" title="Delete">&#10005;</button>
@@ -975,6 +1005,11 @@ function handleStateUpdate(payload) {
     case 'GENERATION_STARTED':
       updateStatusIndicator('waiting_for_response');
       break;
+    case 'PROMPT_NEEDS_INPUT':
+      updateStatusIndicator('waiting');
+      showStatusMessage('Waiting for your input...', 'warning');
+      renderVariableModal(payload);
+      break;
     case 'QUEUE_EMPTY':
       updateStatusIndicator('idle');
       showStatusMessage('All prompts sent!', 'success');
@@ -1001,4 +1036,129 @@ function handleStateUpdate(payload) {
       }
       break;
   }
+}
+
+// =============================================================================
+// Variable Injection Modal Logic
+// =============================================================================
+
+function renderVariableModal(payload) {
+  const modal = getRequiredElement('#variable-modal');
+  const container = getRequiredElement('#variable-inputs-container');
+  const form = getRequiredElement('#variable-form');
+  const cancelBtn = getRequiredElement('#cancel-variable-btn');
+
+  if (!payload.neededPrompts || payload.neededPrompts.length === 0) return;
+
+  container.innerHTML = payload.neededPrompts.map((p, index) => `
+    <div class="prompt-group" style="margin-bottom: var(--spacing-lg); padding-bottom: var(--spacing-sm); border-bottom: ${index !== payload.neededPrompts.length - 1 ? '1px solid var(--color-border-light)' : 'none'};">
+      <p class="input-hint" style="font-style: italic; color: var(--color-text-secondary); margin-bottom: var(--spacing-sm);">Snippet: "${escapeHtml(truncateText(p.prompt, 60))}"</p>
+      ${p.variables.map(variable => `
+        <div class="variable-input-group">
+          <label for="var-${escapeHtml(p.id)}-${escapeHtml(variable)}" class="input-label" style="text-transform: capitalize;">${escapeHtml(variable)}</label>
+          <input type="text" id="var-${escapeHtml(p.id)}-${escapeHtml(variable)}" name="${escapeHtml(p.id)}::${escapeHtml(variable)}" class="prompt-input" required autocomplete="off" style="min-height: 36px; padding: var(--spacing-sm) var(--spacing-md);">
+        </div>
+      `).join('')}
+    </div>
+  `).join('');
+
+  modal.hidden = false;
+  const firstInput = container.querySelector('input');
+  if (firstInput) setTimeout(() => firstInput.focus(), 50);
+
+  form.onsubmit = (e) => {
+    e.preventDefault();
+    const formData = new FormData(form);
+    const structuredVariables = {};
+    
+    for (const [key, value] of formData.entries()) {
+      const[promptId, varName] = key.split('::');
+      if (!structuredVariables[promptId]) structuredVariables[promptId] = {};
+      structuredVariables[promptId][varName] = value;
+    }
+    
+    modal.hidden = true;
+    notifyServiceWorker('SUBMIT_VARIABLES', { variables: structuredVariables });
+    showStatusMessage('Compiling prompt and resuming...', 'info');
+  };
+
+  cancelBtn.onclick = () => {
+    modal.hidden = true;
+    if (elements.autoSendToggle.checked) {
+      elements.autoSendToggle.checked = false;
+      handleToggleChange();
+    }
+    showStatusMessage('Queue paused.', 'warning');
+  };
+}
+
+
+// =============================================================================
+// Inline Edit Mode Logic
+// =============================================================================
+
+async function handleQueueItemDoubleClick(e) {
+  const textEl = e.target.closest('.queue-item-text');
+  if (!textEl) return;
+
+  const itemEl = textEl.closest('.queue-item');
+  const itemId = itemEl.dataset.id;
+
+  // Fetch the fresh, un-truncated prompt from the SSOT storage
+  const queue = await storage.getQueue();
+  const itemIndex = queue.findIndex(i => i.id === itemId);
+  if (itemIndex === -1) return;
+  const item = queue[itemIndex];
+
+  // Create dynamic textarea
+  const textarea = document.createElement('textarea');
+  textarea.className = 'queue-item-edit-input';
+  textarea.value = item.prompt;
+
+  // Swap DOM elements
+  textEl.style.display = 'none';
+  textEl.parentNode.insertBefore(textarea, textEl.nextSibling);
+  
+  // Focus and move cursor to end
+  textarea.focus();
+  textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+
+  let isSaving = false;
+
+  const saveEdit = async () => {
+    if (isSaving) return;
+    isSaving = true;
+
+    const newText = textarea.value.trim();
+    if (newText && newText !== item.prompt) {
+      // Re-extract variables in case the user added or removed placeholders
+      const extractedVariables = [...newText.matchAll(/\{\{([^}]+)\}\}/g)].map(match => match[1].trim());
+      const uniqueVariables =[...new Set(extractedVariables)];
+
+      queue[itemIndex].prompt = newText;
+      queue[itemIndex].variables = uniqueVariables;
+
+      // Persisting to storage automatically triggers the reactive re-render
+      await storage.updateQueue(queue);
+      showStatusMessage('Prompt updated', 'success');
+    } else {
+      // No changes made or empty input, manually re-render to destroy textarea
+      renderQueue(queue);
+    }
+  };
+
+  // Commit changes on loss of focus
+  textarea.addEventListener('blur', saveEdit);
+
+  // Commit on Ctrl+Enter, Cancel on Escape
+  textarea.addEventListener('keydown', (evt) => {
+    if ((evt.ctrlKey || evt.metaKey) && evt.key === 'Enter') {
+      evt.preventDefault();
+      textarea.blur(); // Forces save Edit
+    }
+    if (evt.key === 'Escape') {
+      isSaving = true;
+      renderQueue(queue); // Revert to original UI
+    }
+  });
 }
