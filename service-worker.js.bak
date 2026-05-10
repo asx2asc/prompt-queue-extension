@@ -478,7 +478,6 @@ function getCurrentStatus() {
 class QueueProcessor {
   constructor() {
     this._processing = false;
-    this.activePromptId = null;
   }
 
   /**
@@ -585,7 +584,6 @@ class QueueProcessor {
 
     delete queue[0].retryCount; // Purge stale retry data
     const nextItem = queue[0];
-    this.activePromptId = nextItem.id;
     let resolvedPromptText = nextItem.prompt;
 
     // EPHEMERAL COMPILATION
@@ -650,8 +648,7 @@ class QueueProcessor {
       logger.info('Generation verified successful, mutating queue');
       const queue = stateManager.get('promptQueue') ||[];
       if (queue.length > 0) {
-        // SAFE FILTER: Only remove the exact prompt that initiated generation
-        const updatedQueue = queue.filter(item => item.id !== this.activePromptId);
+        const updatedQueue = queue.slice(1);
         stateManager.set('promptQueue', updatedQueue);
       }
     } else if (payload.reason === 'rate_limit') {
@@ -751,7 +748,6 @@ class QueueProcessor {
 
     delete queue[0].retryCount; // Purge stale retry data
     const nextItem = queue[0];
-    this.activePromptId = nextItem.id;
     let resolvedPromptText = nextItem.prompt;
 
     // EPHEMERAL COMPILATION
@@ -1452,7 +1448,6 @@ class MessageRouter {
         return { acknowledged: true };
         
       case 'COUNTDOWN_UPDATE':
-        if (stateManager.get('processingState') === ProcessingState.IDLE) return { acknowledged: true };
         notifyPopup({ type: 'STATE_UPDATE', payload: { type: 'COUNTDOWN_UPDATE', phase: payload.phase, remaining: payload.remaining, total: payload.total } });
         return { acknowledged: true };
         

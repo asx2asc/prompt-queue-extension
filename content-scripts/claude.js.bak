@@ -1,8 +1,8 @@
 /**
- * LLM Prompt Queue - Gemini Content Script
+ * LLM Prompt Queue - Claude Content Script
  *
- * Handles prompt injection and submission for Google Gemini (gemini.google.com)
- * Gemini uses a Quill-like rich text editor
+ * Handles prompt injection and submission for Claude (claude.ai)
+ * Claude uses ProseMirror for its contenteditable input
  *
  * @version 1.0.0
  */
@@ -30,77 +30,82 @@
   // CONSTANTS
   // =============================================================================
 
-  const SITE_NAME = 'gemini';
+  const SITE_NAME = 'claude';
   let currentExecDelay = 180000;
 
   /**
-   * Selectors for Gemini interface elements
-   * Gemini uses a custom Quill-like editor and has Angular-based components
+   * Selectors for Claude interface elements
+   * Claude uses ProseMirror for rich text editing
+   * IMPORTANT: Avoid matching elements inside canvas/artifact panels
    */
   const SELECTORS = {
-    // Input selectors (Quill-like editor)
+    // Input selectors (ProseMirror contenteditable) - exclude canvas areas
     input: [
-      'rich-textarea .ql-editor',                   // Quill editor inside rich-textarea
-      '.ql-editor[contenteditable="true"]',        // Quill editor directly
-      'rich-textarea div[contenteditable="true"]', // Contenteditable in rich-textarea
-      'div[contenteditable="true"][aria-label*="prompt"]', // Aria-labeled input
-      'div[contenteditable="true"]',                // Generic contenteditable
-      'textarea[aria-label*="prompt"]',            // Fallback textarea
+      // Main chat input - look for the composer area specifically
+      'fieldset div[contenteditable="true"].ProseMirror',  // Inside fieldset (main input)
+      'div[class*="composer"] div[contenteditable="true"].ProseMirror', // Composer area
+      'form div[contenteditable="true"].ProseMirror',     // Inside form
+      // Fallbacks but exclude canvas/artifact areas
+      'div[contenteditable="true"].ProseMirror:not([class*="artifact"]):not([class*="canvas"])',
+      'div.ProseMirror[contenteditable="true"]:not([class*="artifact"]):not([class*="canvas"])',
     ],
 
-    // Send button selectors
+    // Send button selectors - only match main chat send button
     sendButton: [
-      'button[aria-label="Send message"]',         // Primary aria label
-      'button[aria-label*="Send"]',                // Partial match
-      '.send-button',                               // Class-based
-      'button[data-test-id="send-button"]',        // Test ID
-      'button.mdc-icon-button[aria-label*="Send"]', // Material icon button
-      'button:has(mat-icon)',                      // Button with material icon
+      'fieldset button[aria-label="Send Message"]',       // Inside fieldset
+      'fieldset button[aria-label="Send message"]',       // Lowercase variant
+      'button[aria-label="Send Message"]:not([class*="artifact"])',
+      'button[aria-label="Send message"]:not([class*="artifact"])',
+      'form button[aria-label*="Send"]',                  // Inside form
     ],
 
-    // Stop button selectors
+    // Stop button selectors - main chat stop button
     stopButton: [
-      'button[aria-label="Stop generating"]',      // Primary aria label
-      'button[aria-label*="Stop"]',                // Partial match
-      'button[data-test-id="stop-button"]',        // Test ID
-      '.stop-button',                               // Class-based
+      'fieldset button[aria-label="Stop Response"]',      // Inside fieldset
+      'fieldset button[aria-label="Stop response"]',
+      'button[aria-label="Stop Response"]:not([class*="artifact"])',
+      'button[aria-label="Stop response"]:not([class*="artifact"])',
+      'button[aria-label*="Stop"]:not([class*="artifact"])',
     ],
 
     // Response/message containers
     responseContainer: [
-      'message-content',                            // Custom element
-      '.model-response-text',                       // Response text class
-      'model-response',                             // Custom element
-      '.response-container',                        // Container class
-      'div[class*="response"]',                    // Partial class match
+      '[data-is-streaming]',                        // Streaming indicator
+      'div.font-claude-message',                    // Claude message class
+      'div[class*="claude"]',                       // Claude-related classes
+      'div[class*="message"]',                      // Generic message class
+      'div[class*="response"]',                     // Response class
     ],
 
     // Conversation area
     conversationArea: [
       'main',
-      '.conversation-container',
       'div[class*="conversation"]',
       'div[class*="chat"]',
     ],
 
-    // Loading/streaming indicators
-    loadingIndicator: [
-      '.loading-indicator',                         // Loading class
-      '.thinking-indicator',                        // Thinking indicator
-      'mat-spinner',                                // Material spinner
-      'mat-progress-spinner',                       // Progress spinner
-      '[class*="loading"]',                        // Partial class match
-      '[class*="spinner"]',                        // Spinner class
-      '[class*="typing"]',                         // Typing indicator
+    // Typing/streaming indicators
+    streamingIndicator: [
+      '[data-is-streaming="true"]',                 // Data attribute
+      'div[class*="typing"]',                       // Typing indicator
+      'div[class*="streaming"]',                    // Streaming class
+      'span[class*="cursor"]',                      // Cursor indicator
     ]
   };
+
+  // =============================================================================
+  // STATE
+  // =============================================================================
+
+  /** Track if input was successfully found */
+  let inputFound = false;
 
   // =============================================================================
   // DOM HELPERS
   // =============================================================================
 
   /**
-   * Get the input element (Quill editor or contenteditable)
+   * Get the ProseMirror input element
    * @returns {Promise<Element>} Input element
    */
   async function getInputElement() {
@@ -124,27 +129,11 @@
   }
 
   /**
-   * Find loading indicator elements
-   * @returns {Element|null} Loading indicator if found
+   * Find streaming indicator elements
+   * @returns {Element|null} Streaming indicator if found
    */
-  function findLoadingIndicator() {
-    return findElement(SELECTORS.loadingIndicator, { visible: true });
-  }
-
-  /**
-   * Check if the Quill API is available
-   * @returns {Object|null} Quill instance if available
-   */
-  function getQuillInstance() {
-    // Try to find Quill instance on the editor element
-    const editor = document.querySelector('.ql-editor');
-    if (editor) {
-      const container = editor.closest('.ql-container');
-      if (container && container.__quill) {
-        return container.__quill;
-      }
-    }
-    return null;
+  function findStreamingIndicator() {
+    return findElement(SELECTORS.streamingIndicator, { visible: true });
   }
 
   // =============================================================================
@@ -152,11 +141,11 @@
   // =============================================================================
 
   /**
-   * Check if Gemini is currently generating a response
+   * Check if Claude is currently generating a response
    *
    * Key insight: The send button being disabled is NOT a reliable indicator
-   * because Gemini disables it when the input is empty (after generation completes).
-   * We must rely on stop button and loading indicators only.
+   * because Claude disables it when the input is empty (after generation completes).
+   * We must rely on stop button and streaming indicators only.
    *
    * @returns {boolean} True if generating
    */
@@ -177,33 +166,35 @@
       }
     }
 
-    // Method 3: Check for loading indicators
-    const loadingIndicator = findLoadingIndicator();
-    if (loadingIndicator) {
-      log.debug('isGenerating: Loading indicator found');
+    // Method 3: Check for streaming data attribute
+    const streamingElements = document.querySelectorAll('[data-is-streaming="true"]');
+    if (streamingElements.length > 0) {
+      log.debug('isGenerating: Streaming attribute found');
       return true;
     }
 
-    // Method 4: Check for material spinners
-    const spinners = document.querySelectorAll('mat-spinner, mat-progress-spinner');
-    for (const spinner of spinners) {
-      if (isElementVisible(spinner)) {
-        log.debug('isGenerating: Material spinner found');
-        return true;
-      }
+    // Method 4: Check for streaming/typing indicators
+    const streamingIndicator = findStreamingIndicator();
+    if (streamingIndicator) {
+      log.debug('isGenerating: Streaming indicator found');
+      return true;
     }
 
-    // Method 5: Check for "thinking" or "generating" text/elements
-    const thinkingElements = document.querySelectorAll('[class*="thinking"], [class*="generating"], [class*="loading"]');
-    for (const el of thinkingElements) {
+    // Method 5: Check for loading spinner or animation (but not generic ones)
+    const loadingElements = document.querySelectorAll(
+      '[class*="loading"]:not([class*="loaded"]), ' +
+      '[class*="spinner"], ' +
+      '[class*="generating"]'
+    );
+    for (const el of loadingElements) {
       if (isElementVisible(el)) {
-        log.debug('isGenerating: Thinking/generating element found');
+        log.debug('isGenerating: Loading indicator found');
         return true;
       }
     }
 
     // NOTE: We deliberately do NOT check if send button is disabled
-    // because Gemini disables it when input is empty (normal state after response)
+    // because Claude disables it when input is empty (normal state after response)
 
     log.debug('isGenerating: Not generating');
     return false;
@@ -214,90 +205,87 @@
   // =============================================================================
 
   /**
-   * Inject a prompt into the Gemini input
+   * Inject a prompt into the Claude ProseMirror input
+   * Uses retry logic for graceful failure handling
    *
-   * Gemini uses a Quill-like editor, which requires special handling:
-   * 1. Try Quill API if available
-   * 2. Fall back to contenteditable manipulation
+   * ProseMirror requires special handling:
+   * 1. Focus the element
+   * 2. Clear existing content
+   * 3. Use execCommand or set innerHTML with proper structure
+   * 4. Dispatch input event
    *
    * @param {string} text - Prompt text to inject
    * @returns {Promise<void>}
    */
   async function injectPrompt(text) {
-    log.info('Injecting prompt into Gemini');
+    log.info('Injecting prompt into Claude');
 
-    const input = await getInputElement();
+    return retryDOMOperation(async () => {
+      const input = await getInputElement();
 
-    // Focus the input
-    input.focus();
-    await sleep(50);
+      if (!input) {
+        throw new Error('Claude input element not found');
+      }
 
-    // Try Quill API first
-    const quill = getQuillInstance();
-    if (quill) {
-      log.debug('Using Quill API for injection');
-      quill.setText('');
-      quill.insertText(0, text);
-      await sleep(100);
-      log.info('Prompt injected via Quill API');
-      return;
-    }
-
-    // Fallback to contenteditable manipulation
-    log.debug('Quill API not available, using contenteditable fallback');
-
-    // Clear existing content
-    input.innerHTML = '';
-    await sleep(50);
-
-    // For Quill-like editor, wrap content in paragraph
-    if (input.classList.contains('ql-editor')) {
-      input.innerHTML = `<p>${text}</p>`;
-    } else {
-      // Try execCommand first (works better with some frameworks)
+      // Focus the input
       input.focus();
+      await sleep(50);
+
+      // Clear existing content
+      input.innerHTML = '';
+
+      // Method 1: Try document.execCommand (works well with ProseMirror)
       const execCommandSuccess = document.execCommand('insertText', false, text);
 
       if (!execCommandSuccess || input.textContent.trim() !== text.trim()) {
-        // Direct textContent fallback
-        input.textContent = text;
+        // Method 2: Fallback to setting innerHTML with paragraph structure
+        // ProseMirror expects content in paragraph tags
+        log.debug('execCommand failed, using innerHTML fallback');
+
+        // Split text by newlines and wrap each in a paragraph
+        const paragraphs = text.split('\n').map(line => {
+          if (line.trim() === '') {
+            return '<p><br></p>';
+          }
+          return `<p>${line}</p>`;
+        }).join('');
+
+        input.innerHTML = paragraphs;
       }
-    }
 
-    // Dispatch multiple events to trigger framework state updates
-    // InputEvent for modern frameworks
-    input.dispatchEvent(new InputEvent('input', {
-      bubbles: true,
-      cancelable: true,
-      inputType: 'insertText',
-      data: text
-    }));
+      // Dispatch events for ProseMirror to pick up the change
+      input.dispatchEvent(new InputEvent('input', {
+        bubbles: true,
+        cancelable: true,
+        inputType: 'insertText',
+        data: text
+      }));
 
-    // Generic events
-    input.dispatchEvent(new Event('input', { bubbles: true }));
-    input.dispatchEvent(new Event('change', { bubbles: true }));
-
-    // Simulate typing finished - this helps Angular detect changes
-    input.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
-    input.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true, data: text }));
-
-    // Keyboard events to simulate real typing
-    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', bubbles: true }));
-    input.dispatchEvent(new KeyboardEvent('keyup', { key: 'a', bubbles: true }));
-
-    // Wait longer for Angular change detection
-    await sleep(300);
-
-    // Verify text was injected
-    const injectedText = input.textContent || input.innerText || '';
-    if (!injectedText.includes(text.substring(0, 20))) {
-      log.warn('Text verification failed, retrying with alternative method');
-      input.innerHTML = `<p>${text}</p>`;
+      // Also dispatch a generic input event
       input.dispatchEvent(new Event('input', { bubbles: true }));
-      await sleep(200);
-    }
 
-    log.info('Prompt injected successfully');
+      // Dispatch composition events (ProseMirror sometimes needs these)
+      input.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
+      input.dispatchEvent(new CompositionEvent('compositionend', {
+        bubbles: true,
+        data: text
+      }));
+
+      // Wait for ProseMirror state to update
+      await sleep(150);
+
+      // Verify injection
+      const inputText = input.textContent || '';
+      if (inputText.length < Math.min(10, text.length)) {
+        throw new Error('Prompt text verification failed - text may not have been injected');
+      }
+
+      log.info('Prompt injected successfully');
+    }, {
+      maxRetries: 3,
+      baseDelay: 500,
+      operationName: 'Claude prompt injection'
+    });
   }
 
   /**
@@ -308,31 +296,21 @@
   async function submitPrompt() {
     log.info('Submitting prompt');
 
-    // Helper to check if button is disabled
-    const isButtonDisabled = (btn) => {
-      return btn.disabled || btn.getAttribute('aria-disabled') === 'true';
-    };
+    // Get send button
+    const sendButton = await getSendButton();
 
-    // Wait for button to be enabled (up to 3 seconds)
-    // Re-query the button each time since Angular may recreate elements
-    let sendButton = null;
+    // Wait for button to be available (up to 2 seconds)
     let attempts = 0;
-    while (attempts < 30) {
-      sendButton = findElement(SELECTORS.sendButton);
-      if (sendButton && !isButtonDisabled(sendButton)) {
-        break;
-      }
+    while ((sendButton.disabled || sendButton.getAttribute('aria-disabled') === 'true') && attempts < 20) {
       await sleep(100);
       attempts++;
     }
 
-    // If still no enabled button, try Enter key submission
-    if (!sendButton || isButtonDisabled(sendButton)) {
-      log.warn('Send button still disabled after waiting, trying Enter key');
+    if (sendButton.disabled || sendButton.getAttribute('aria-disabled') === 'true') {
+      log.warn('Send button still disabled after waiting');
 
+      // Try alternative submission via Enter key
       const input = await getInputElement();
-
-      // Try Enter key submission
       input.dispatchEvent(new KeyboardEvent('keydown', {
         key: 'Enter',
         code: 'Enter',
@@ -342,18 +320,7 @@
         cancelable: true
       }));
 
-      await sleep(100);
-
-      input.dispatchEvent(new KeyboardEvent('keyup', {
-        key: 'Enter',
-        code: 'Enter',
-        keyCode: 13,
-        which: 13,
-        bubbles: true,
-        cancelable: true
-      }));
-
-      log.info('Prompt submitted via Enter key');
+      log.debug('Attempted Enter key submission');
       return true;
     }
 
@@ -404,12 +371,13 @@
 
     switch (type) {
       case 'INJECT_PROMPT': {
+        log.debug('INJECT_PROMPT received, isProcessing:', window.PromptQueueCommon.isProcessing);
         if (window.PromptQueueCommon.isProcessing) {
+          log.warn('Rejecting INJECT_PROMPT - already processing');
           return { error: 'Already processing a prompt' };
         }
 
         window.PromptQueueCommon.isProcessing = true;
-        window.PromptQueueCommon.isAborted = false;
 
         try {
           // Inject the prompt
@@ -477,7 +445,6 @@
         // Start monitoring for generation completion (for manual sends)
         log.info('Starting generation monitor for manual send');
         window.PromptQueueCommon.isProcessing = true;
-        window.PromptQueueCommon.isAborted = false;
 
         startGenerationMonitor(isGenerating, {
           pollInterval: 500,
@@ -498,10 +465,10 @@
   // =============================================================================
 
   /**
-   * Initialize the Gemini content script
+   * Initialize the Claude content script
    */
   async function initialize() {
-    log.info('Initializing Gemini content script');
+    log.info('Initializing Claude content script');
 
     // Set the current site
     window.PromptQueueCommon.currentSite = SITE_NAME;
@@ -509,7 +476,8 @@
     // Wait for the page to be ready
     try {
       await waitForElement(SELECTORS.input, { timeout: 30000 });
-      log.info('Quill editor found');
+      inputFound = true;
+      log.info('ProseMirror input found');
     } catch (error) {
       log.warn('Input not found during initialization, page may still be loading');
     }
@@ -525,7 +493,7 @@
       log.error('Failed to send SITE_READY:', error);
     }
 
-    log.info('Gemini content script initialized');
+    log.info('Claude content script initialized');
   }
 
   // Handle generation complete to reset processing state

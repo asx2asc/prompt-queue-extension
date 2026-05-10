@@ -378,6 +378,7 @@
         }
 
         window.PromptQueueCommon.isProcessing = true;
+        window.PromptQueueCommon.isAborted = false;
 
         try {
           // Inject the prompt
@@ -445,6 +446,7 @@
         // Start monitoring for generation completion (for manual sends)
         log.info('Starting generation monitor for manual send');
         window.PromptQueueCommon.isProcessing = true;
+        window.PromptQueueCommon.isAborted = false;
 
         startGenerationMonitor(isGenerating, {
           pollInterval: 500,

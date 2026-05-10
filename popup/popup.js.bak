@@ -535,8 +535,9 @@ async function handleQueueItemAction(e) {
   if (action === 'delete') {
     const itemElement = document.querySelector(`.queue-item[data-id="${itemId}"]`);
     if (itemElement) {
-      itemElement.style.display = 'none';
-            }
+      itemElement.classList.add('leaving');
+      await new Promise(resolve => setTimeout(resolve, 200));
+    }
     await storage.removeFromQueue(itemId);
   }
 }

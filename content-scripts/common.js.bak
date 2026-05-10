@@ -728,7 +728,7 @@ function sleepWithCountdown(ms, phaseName) {
     sendToBackground('COUNTDOWN_UPDATE', { phase: phaseName, remaining: initialSeconds, total: initialSeconds }).catch(() => {});
 
     const interval = setInterval(() => {
-      if (window.PromptQueueCommon.isAborted) {
+      if (!window.PromptQueueCommon.isProcessing) {
         clearInterval(interval);
         reject(new Error('Aborted by user Kill Switch.'));
         return;
