@@ -436,12 +436,24 @@
               promptId: payload.id
             });
 
+            // Specific content evaluator for AI Studio rate limits
+            const checkRateLimit = () => {
+              const responseContainers = document.querySelectorAll('ms-text-chunk, .response-container, .model-response,[class*="response"]');
+              for (const container of responseContainers) {
+                if (container.textContent && container.textContent.includes("error\nYou've reached your rate limit. Please try again later.")) {
+                  return 'rate_limit';
+                }
+              }
+              return null; // No known error detected
+            };
+
             // Start monitoring for completion with longer poll interval
             // Content-based detection needs time between checks to see changes
             startGenerationMonitor(isGenerating, {
               pollInterval: 1000, // Check every 1 second for content changes
               timeout: 300000,    // 5 minutes max
-              observeTarget: SELECTORS.conversationArea[0]
+              observeTarget: SELECTORS.conversationArea[0],
+              checkErrorFn: checkRateLimit
             });
 
             return { submitted: true };

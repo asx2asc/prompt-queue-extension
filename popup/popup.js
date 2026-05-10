@@ -999,6 +999,11 @@ function handleStateUpdate(payload) {
       updateStatusIndicator('sending_prompt');
       showStatusMessage('Sending prompt...', 'info');
       break;
+    case 'PAUSED_FOR_ERROR':
+      updateStatusIndicator('paused');
+      showStatusMessage('Queue paused due to rate limit.', 'warning');
+      renderErrorPauseModal(payload);
+      break;
     case 'QUEUE_ITEM_SENT':
       showStatusMessage(`Prompt sent (${payload.remainingCount} remaining)`, 'success');
       break;
@@ -1161,4 +1166,38 @@ async function handleQueueItemDoubleClick(e) {
       renderQueue(queue); // Revert to original UI
     }
   });
+}
+
+
+// =============================================================================
+// Error Pause Modal Logic
+// =============================================================================
+
+function renderErrorPauseModal(payload) {
+  const modal = document.getElementById('error-pause-modal');
+  const messageEl = document.getElementById('error-pause-message');
+  const resumeBtn = document.getElementById('resume-error-btn');
+  const cancelBtn = document.getElementById('cancel-error-btn');
+
+  if (!modal || !messageEl) return;
+
+  // Utilize the exact string required by specification
+  messageEl.textContent = payload.message || "An error occurred. Please verify your connection or limits.";
+  modal.hidden = false;
+
+  resumeBtn.onclick = () => {
+    modal.hidden = true;
+    notifyServiceWorker('RESUME_FROM_ERROR', {});
+    showStatusMessage('Resuming queue...', 'info');
+  };
+
+  cancelBtn.onclick = () => {
+    modal.hidden = true;
+    const autoSendToggle = document.getElementById('auto-send-toggle');
+    if (autoSendToggle && autoSendToggle.checked) {
+      autoSendToggle.checked = false;
+      handleToggleChange(); // Gracefully toggle off
+    }
+    showStatusMessage('Queue paused and canceled.', 'warning');
+  };
 }

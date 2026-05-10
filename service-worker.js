@@ -33,7 +33,8 @@ const ProcessingState = {
   IDLE: 'idle',
   WAITING_FOR_RESPONSE: 'waiting_for_response',
   SENDING_PROMPT: 'sending_prompt',
-  AWAITING_USER_INPUT: 'awaiting_user_input'
+  AWAITING_USER_INPUT: 'awaiting_user_input',
+  PAUSED_FOR_ERROR: 'paused_for_error'
 };
 
 /**
@@ -178,6 +179,11 @@ class StateManager {
       // Load persisted values into memory
       for (const [key, value] of Object.entries(stored)) {
         this._state.set(key, value);
+      }
+
+      // Unify Settings Data Model: Map popup's settings object to background state
+      if (stored.settings && typeof stored.settings.autoSendEnabled === 'boolean') {
+        this._state.set('autoSendEnabled', stored.settings.autoSendEnabled, false);
       }
 
       // Set defaults for required state
@@ -530,6 +536,14 @@ class QueueProcessor {
     if (queue.length === 0) {
       stateManager.set('processingState', ProcessingState.IDLE);
       stateManager.set('autoSendEnabled', false);
+      
+      // Sync disable back to popup settings
+      chrome.storage.local.get('settings').then(stored => {
+        const updatedSettings = stored.settings || {};
+        updatedSettings.autoSendEnabled = false;
+        chrome.storage.local.set({ settings: updatedSettings });
+      });
+      
       stateManager.set('runtimeVariables', {}, false); // Clear context
       focusManager.clearProcessingTab();
       notifyPopup({ type: 'QUEUE_EMPTY', autoSendDisabled: true });
@@ -596,13 +610,11 @@ class QueueProcessor {
       });
 
       if (response && response.success) {
-        logger.info('Prompt injected successfully');
+        logger.info('Prompt injected successfully, holding in queue pending generation outcome');
         stateManager.set('processingState', ProcessingState.WAITING_FOR_RESPONSE);
         
-        const updatedQueue = queue.slice(1);
-        stateManager.set('promptQueue', updatedQueue);
-        
-        notifyPopup({ type: 'QUEUE_ITEM_SENT', item: nextItem, remainingCount: updatedQueue.length });
+        // Defer slicing the queue until verified completion. Pass current queue length.
+        notifyPopup({ type: 'QUEUE_ITEM_SENT', item: nextItem, remainingCount: queue.length });
       } else {
         throw new Error(response?.error || 'Failed to inject prompt');
       }
@@ -616,8 +628,8 @@ class QueueProcessor {
   /**
    * Handle generation complete - process next item if auto-send enabled
    */
-  async onGenerationComplete() {
-    logger.info('Generation complete, checking for next item');
+  async onGenerationComplete(payload = {}) {
+    logger.info('Generation complete, validating outcome', payload);
 
     const currentState = stateManager.get('processingState');
     const autoSendEnabled = stateManager.get('autoSendEnabled');
@@ -626,6 +638,32 @@ class QueueProcessor {
 
     if (currentState !== ProcessingState.WAITING_FOR_RESPONSE) {
       logger.debug('Not waiting for response, ignoring generation complete');
+      return;
+    }
+
+    // Queue mutation happens ONLY on verified successful generation
+    if (payload.reason === 'completed') {
+      logger.info('Generation verified successful, mutating queue');
+      const queue = stateManager.get('promptQueue') ||[];
+      if (queue.length > 0) {
+        const updatedQueue = queue.slice(1);
+        stateManager.set('promptQueue', updatedQueue);
+      }
+    } else if (payload.reason === 'rate_limit') {
+      logger.warn(`Rate limit intercepted. Queue slice aborted. Transitioning to PAUSED_FOR_ERROR.`);
+      stateManager.set('processingState', ProcessingState.PAUSED_FOR_ERROR);
+      
+      // Temporarily toggle auto-send off visually, but preserve intent if needed, 
+      // or simply rely on the PAUSED state to block execution.
+      notifyPopup({ 
+        type: 'PAUSED_FOR_ERROR', 
+        errorType: 'rate_limit',
+        message: "you've ran out of credits on 'aistudio.google.com' please tap the below ready button when you are ready to read attempt this prompt and continue"
+      });
+      return; // Halt execution completely
+    } else {
+      logger.warn(`Generation failed for unknown reason: ${payload.reason}. Queue slice aborted.`);
+      stateManager.set('processingState', ProcessingState.IDLE);
       return;
     }
 
@@ -642,8 +680,10 @@ class QueueProcessor {
     // Set to idle before processing next
     stateManager.set('processingState', ProcessingState.IDLE);
 
-    // Process next item
-    await this.processNextItem();
+    // Only automatically process the next item if the current one was successful
+    if (payload.reason === 'completed') {
+      await this.processNextItem();
+    }
   }
 
   /**
@@ -1078,7 +1118,9 @@ class MessageRouter {
    */
   _setupListener() {
     chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-      this._handleMessage(message, sender, sendResponse);
+      ensureInitialized().then(() => {
+        this._handleMessage(message, sender, sendResponse);
+      });
       // Return true to indicate async response
       return true;
     });
@@ -1141,6 +1183,14 @@ class MessageRouter {
       case PopupMessageType.TOGGLE_AUTO_SEND:
         const newAutoSendState = payload?.enabled ?? !stateManager.get('autoSendEnabled');
         stateManager.set('autoSendEnabled', newAutoSendState);
+        
+        // Sync back to settings object so popup UI persists correctly
+        chrome.storage.local.get('settings').then(stored => {
+          const updatedSettings = stored.settings || {};
+          updatedSettings.autoSendEnabled = newAutoSendState;
+          chrome.storage.local.set({ settings: updatedSettings });
+        });
+        
         logger.info('Auto-send toggled:', newAutoSendState);
 
         if (newAutoSendState) {
@@ -1308,6 +1358,19 @@ class MessageRouter {
           return { resumed: true };
         }
 
+      case 'RESUME_FROM_ERROR':
+        logger.info('Received RESUME_FROM_ERROR. Transitioning to IDLE and re-attempting prompt.');
+        if (stateManager.get('processingState') !== ProcessingState.PAUSED_FOR_ERROR) {
+          return { error: 'Not currently paused for an error' };
+        }
+        
+        stateManager.set('processingState', ProcessingState.IDLE);
+        
+        // Since we deferred mutation, the prompt is safely at index 0.
+        // We simply re-invoke the processing loop.
+        queueProcessor.startProcessing();
+        return { resumed: true };
+
       default:
         logger.warn('Unknown content script message type:', type);
         return { error: 'Unknown message type' };
@@ -1338,8 +1401,8 @@ class MessageRouter {
         return { acknowledged: true };
         
       case 'GENERATION_COMPLETE':
-        logger.info('Generation complete in tab', tabId);
-        await queueProcessor.onGenerationComplete();
+        logger.info('Generation complete in tab', tabId, payload);
+        await queueProcessor.onGenerationComplete(payload);
         return { acknowledged: true };
         
       case 'ERROR':
@@ -1370,7 +1433,7 @@ chrome.runtime.onInstalled.addListener(async (details) => {
   logger.info('Extension installed/updated:', details.reason);
 
   // Initialize state
-  await stateManager.initialize();
+  await ensureInitialized();
   await tabTracker.initialize();
 
   // Set defaults on fresh install
@@ -1388,7 +1451,7 @@ chrome.runtime.onInstalled.addListener(async (details) => {
 chrome.runtime.onStartup.addListener(async () => {
   logger.info('Browser started - initializing extension');
 
-  await stateManager.initialize();
+  await ensureInitialized();
   await tabTracker.initialize();
 
   // Reset processing state on startup (don't resume mid-process)
@@ -1398,20 +1461,22 @@ chrome.runtime.onStartup.addListener(async () => {
 /**
  * Handle service worker wake-up (for when it was terminated and restarted)
  */
-async function ensureInitialized() {
-  // Check if state is initialized
-  if (!stateManager.get('processingState')) {
-    logger.info('Service worker woke up - re-initializing');
-    await stateManager.initialize();
-    await tabTracker.initialize();
+/**
+ * Handle service worker wake-up (Promise Latch)
+ */
+let swInitPromise = null;
+function ensureInitialized() {
+  if (!swInitPromise) {
+    swInitPromise = (async () => {
+      if (!stateManager.get('processingState')) {
+        logger.info('Service worker bootstrapping state from storage...');
+        await stateManager.initialize();
+        await tabTracker.initialize();
+      }
+    })();
   }
+  return swInitPromise;
 }
-
-// Ensure initialization on any message (service worker may have been terminated)
-chrome.runtime.onMessage.addListener(() => {
-  ensureInitialized();
-  return false; // Don't interfere with actual message handling
-});
 
 /**
  * Listen for storage changes to keep state in sync

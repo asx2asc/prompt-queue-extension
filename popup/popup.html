@@ -144,6 +144,20 @@
         </form>
       </div>
     </div>
+
+    <!-- Rate Limit Error Intervention Modal -->
+    <div id="error-pause-modal" class="modal-overlay" hidden>
+      <div class="modal-content" role="dialog" aria-labelledby="error-modal-title">
+        <h2 id="error-modal-title" class="header-title" style="padding: 0; border: none; margin-bottom: var(--spacing-xs); color: var(--color-error);">Action Required</h2>
+        <p id="error-pause-message" class="input-hint" style="margin-top: 0; margin-bottom: var(--spacing-lg); font-size: 0.875rem; color: var(--color-text-primary);">
+          <!-- Populated dynamically via JS -->
+        </p>
+        <div style="display: flex; gap: var(--spacing-sm); margin-top: var(--spacing-md);">
+          <button type="button" id="resume-error-btn" class="btn btn-primary">Ready</button>
+          <button type="button" id="cancel-error-btn" class="btn btn-secondary">Cancel Queue</button>
+        </div>
+      </div>
+    </div>
   </div>
   <script src="sortable.min.js"></script>
   <script src="sortable.min.js"></script>

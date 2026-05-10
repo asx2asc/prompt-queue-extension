@@ -505,7 +505,8 @@ function startGenerationMonitor(isGeneratingFn, options = {}) {
   const {
     pollInterval = 500,
     timeout = 300000,
-    observeTarget = null
+    observeTarget = null,
+    checkErrorFn = null
   } = options;
 
   // Clear any existing monitors
@@ -529,6 +530,18 @@ function startGenerationMonitor(isGeneratingFn, options = {}) {
         isProcessing = false;
         sendToBackground('GENERATION_COMPLETE', { reason: 'timeout' });
         return;
+      }
+
+      // Explicit Content-Aware Error Detection Phase
+      if (checkErrorFn) {
+        const errorReason = await Promise.resolve(checkErrorFn());
+        if (errorReason) {
+          log.warn(`Generation halted by error detection: ${errorReason}`);
+          stopGenerationMonitor();
+          isProcessing = false;
+          sendToBackground('GENERATION_COMPLETE', { reason: errorReason });
+          return;
+        }
       }
 
       const generating = await Promise.resolve(isGeneratingFn());
