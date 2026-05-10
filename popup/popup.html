@@ -21,6 +21,7 @@
     <nav class="tabs-nav">
       <button class="tab-btn active" data-target="queue" aria-selected="true">Active Queue</button>
       <button class="tab-btn" data-target="library" aria-selected="false">Library</button>
+      <button class="tab-btn" data-target="settings" aria-selected="false">Settings</button>
     </nav>
 
     <!-- Site Connection Status -->
@@ -84,24 +85,21 @@
     <!-- Settings Section (Relocated as Footer) -->
 <!-- Settings Section -->
       <section class="settings-section execution-footer">
-        <div class="toggle-container">
-          <label class="toggle-label" for="auto-send-toggle">
-            Auto-send enabled
-          </label>
+        <div class="toggle-container" style="margin-bottom: 10px;">
+          <label class="toggle-label" for="auto-send-toggle">Auto-send enabled</label>
           <label class="toggle-switch">
-            <input
-              type="checkbox"
-              id="auto-send-toggle"
-              role="switch"
-              aria-checked="false"
-            >
+            <input type="checkbox" id="auto-send-toggle" role="switch" aria-checked="false">
             <span class="toggle-slider"></span>
           </label>
         </div>
-        <button id="send-next-btn" class="btn btn-primary" type="button" style="display: none;">
-          <span class="btn-icon-left">&#9654;</span>
-          Send Next Prompt
-        </button>
+        <div style="display: flex; gap: 8px; width: 100%;">
+          <button id="send-next-btn" class="btn btn-primary" type="button" style="display: none; flex: 1;">
+            <span class="btn-icon-left">&#9654;</span> Send Next Prompt
+          </button>
+          <button id="stop-queue-btn" class="btn btn-danger" type="button" style="display: none; flex: 1;">
+            <span class="btn-icon-left">&#9632;</span> Stop Auto-Run
+          </button>
+        </div>
       </section>
 
     </div>
@@ -121,6 +119,34 @@
         </div>
         <div id="library-list" class="library-list" role="list">
           <!-- Populated by JavaScript -->
+        </div>
+      </section>
+    </div>
+
+    
+    <!-- =================================================================== -->
+    <!-- VIEW: SETTINGS                                                      -->
+    <!-- =================================================================== -->
+    <div id="view-settings" class="view-section" hidden>
+      <section class="settings-section" style="flex: 1; overflow-y: auto; padding: var(--spacing-lg);">
+        <h2 class="library-title" style="margin-bottom: 20px; font-size: 1.1rem;">Automation Configuration</h2>
+        
+        <div class="library-chain-card">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+              <div>
+                  <label class="input-label" style="margin:0; font-size: 0.95rem; color: var(--color-text-primary);">Formulation Delay</label>
+                  <span class="input-hint" style="margin-top: 4px;">Seconds to wait after typing prompt.</span>
+              </div>
+              <input type="number" id="setting-form-delay" min="1" max="600" class="prompt-input" style="width: 80px; min-height: 36px; padding: 4px; text-align: center; font-weight: 600;" value="60">
+            </div>
+            
+            <div style="display: flex; justify-content: space-between; align-items: center; border-top: 1px solid var(--color-border-light); padding-top: 15px;">
+              <div>
+                  <label class="input-label" style="margin:0; font-size: 0.95rem; color: var(--color-text-primary);">Execution Delay</label>
+                  <span class="input-hint" style="margin-top: 4px;">Seconds to wait before clicking send.</span>
+              </div>
+              <input type="number" id="setting-exec-delay" min="1" max="600" class="prompt-input" style="width: 80px; min-height: 36px; padding: 4px; text-align: center; font-weight: 600;" value="180">
+            </div>
         </div>
       </section>
     </div>

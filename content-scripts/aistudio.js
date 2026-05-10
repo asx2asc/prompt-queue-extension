@@ -31,6 +31,7 @@
   // =============================================================================
 
   const SITE_NAME = 'aistudio';
+  let currentExecDelay = 180000;
 
   /**
    * Selectors for AI Studio interface elements
@@ -372,6 +373,10 @@
       return true;
     }
 
+    log.info(`Button interactive. Execution pause: ${currentExecDelay}ms.`);
+    await sleep(currentExecDelay);
+    if (!window.PromptQueueCommon.isProcessing) { log.warn('Execution aborted by user Kill Switch.'); return false; }
+
     // Click the run button
     const clicked = clickButton(sendButton);
 
@@ -422,6 +427,11 @@
         try {
           // Inject the prompt
           await injectPrompt(payload.prompt);
+
+          currentExecDelay = payload.executionDelay || 180000;
+          log.info(`Text injected. Formulation pause: ${payload.formulationDelay || 60000}ms.`);
+          await sleep(payload.formulationDelay || 60000);
+          if (!window.PromptQueueCommon.isProcessing) { log.warn('Execution aborted by user Kill Switch.'); window.PromptQueueCommon.isProcessing = false; return { error: 'Aborted by user' }; }
 
           // Submit it
           const submitted = await submitPrompt();

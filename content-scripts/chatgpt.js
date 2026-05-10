@@ -31,6 +31,7 @@
   // =============================================================================
 
   const SITE_NAME = 'chatgpt';
+  let currentExecDelay = 180000;
 
   /**
    * Selectors for ChatGPT interface elements
@@ -308,7 +309,11 @@
         throw new Error('Send button not available and Enter key fallback failed');
       }
 
-      // Click the send button
+      log.info(`Button interactive. Execution pause: ${currentExecDelay}ms.`);
+    await sleep(currentExecDelay);
+    if (!window.PromptQueueCommon.isProcessing) { log.warn('Execution aborted by user Kill Switch.'); return false; }
+
+    // Click the send button
       const clicked = clickButton(sendButton);
 
       if (clicked) {
@@ -357,6 +362,11 @@
         try {
           // Inject the prompt
           await injectPrompt(payload.prompt);
+
+          currentExecDelay = payload.executionDelay || 180000;
+          log.info(`Text injected. Formulation pause: ${payload.formulationDelay || 60000}ms.`);
+          await sleep(payload.formulationDelay || 60000);
+          if (!window.PromptQueueCommon.isProcessing) { log.warn('Execution aborted by user Kill Switch.'); window.PromptQueueCommon.isProcessing = false; return { error: 'Aborted by user' }; }
 
           // Submit it
           const submitted = await submitPrompt();

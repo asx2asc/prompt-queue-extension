@@ -574,6 +574,7 @@ class QueueProcessor {
       stateManager.set('processingState', ProcessingState.AWAITING_USER_INPUT);
       stateManager.set('pendingResumeAction', 'manual', false);
       
+      stateManager.set('lastNeededPrompts', neededPrompts, false);
       notifyPopup({ 
         type: 'PROMPT_NEEDS_INPUT', 
         neededPrompts: neededPrompts 
@@ -581,6 +582,7 @@ class QueueProcessor {
       return { sent: false, pending: true };
     }
 
+    delete queue[0].retryCount; // Purge stale retry data
     const nextItem = queue[0];
     let resolvedPromptText = nextItem.prompt;
 
@@ -606,7 +608,7 @@ class QueueProcessor {
 
       const response = await sendToContentScript(processingTabId, {
         type: OutgoingMessageType.INJECT_PROMPT,
-        payload: { prompt: resolvedPromptText, id: nextItem.id }
+        payload: { prompt: resolvedPromptText, id: nextItem.id, formulationDelay: stateManager.get('settings')?.formulationDelay || 60000, executionDelay: stateManager.get('settings')?.executionDelay || 180000 }
       });
 
       if (response && response.success) {
@@ -736,6 +738,7 @@ class QueueProcessor {
       stateManager.set('processingState', ProcessingState.AWAITING_USER_INPUT);
       stateManager.set('pendingResumeAction', 'manual', false);
       
+      stateManager.set('lastNeededPrompts', neededPrompts, false);
       notifyPopup({ 
         type: 'PROMPT_NEEDS_INPUT', 
         neededPrompts: neededPrompts 
@@ -743,6 +746,7 @@ class QueueProcessor {
       return { sent: false, pending: true };
     }
 
+    delete queue[0].retryCount; // Purge stale retry data
     const nextItem = queue[0];
     let resolvedPromptText = nextItem.prompt;
 
@@ -768,7 +772,7 @@ class QueueProcessor {
 
       const response = await sendToContentScript(currentTabId, {
         type: OutgoingMessageType.INJECT_PROMPT,
-        payload: { prompt: resolvedPromptText, id: nextItem.id }
+        payload: { prompt: resolvedPromptText, id: nextItem.id, formulationDelay: stateManager.get('settings')?.formulationDelay || 60000, executionDelay: stateManager.get('settings')?.executionDelay || 180000 }
       });
 
       if (response && response.success) {
@@ -1318,6 +1322,18 @@ class MessageRouter {
         await queueProcessor.startProcessing();
         return { started: true };
 
+      case PopupMessageType.STOP_PROCESSING:
+        logger.info('Stop processing explicitly requested');
+        queueProcessor.stop();
+        stateManager.set('autoSendEnabled', false);
+        chrome.storage.local.get('settings').then(stored => {
+          const updatedSettings = stored.settings || {};
+          updatedSettings.autoSendEnabled = false;
+          chrome.storage.local.set({ settings: updatedSettings });
+        });
+        notifyPopup({ type: 'PROCESSING_STOPPED', reason: 'user_aborted' });
+        return { stopped: true };
+
       case PopupMessageType.SEND_NEXT:
         logger.info('Manual send next requested');
         // Send just the next item without enabling auto-send
@@ -1392,6 +1408,24 @@ class MessageRouter {
         const tabSiteMap = stateManager.get('tabSiteMap') || {};
         tabSiteMap[tabId] = payload.siteType;
         stateManager.set('tabSiteMap', tabSiteMap);
+
+        // PAGE REFRESH RECOVERY
+        if (stateManager.get('processingTabId') === tabId && stateManager.get('processingState') === ProcessingState.WAITING_FOR_RESPONSE) {
+          logger.warn(`Tab ${tabId} reloaded mid-generation. Recovering.`);
+          stateManager.set('processingState', ProcessingState.IDLE);
+          const queue = stateManager.get('promptQueue') || [];
+          if (queue.length > 0) {
+            queue[0].retryCount = (queue[0].retryCount || 0) + 1;
+            if (queue[0].retryCount > 3) {
+              stateManager.set('processingState', ProcessingState.PAUSED_FOR_ERROR);
+              notifyPopup({ type: 'PAUSED_FOR_ERROR', message: 'Page refreshed repeatedly. Queue paused to prevent loops.' });
+              return { acknowledged: true };
+            }
+            stateManager.set('promptQueue', queue, false);
+            notifyPopup({ type: 'STATE_UPDATE', payload: { type: 'RECOVERING_PAGE_REFRESH', retryCount: queue[0].retryCount } });
+          }
+          setTimeout(() => queueProcessor.startProcessing(), 3000);
+        }
         return { acknowledged: true };
         
       case 'GENERATION_STARTED':

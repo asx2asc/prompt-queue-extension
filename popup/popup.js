@@ -14,7 +14,9 @@ const STORAGE_KEYS = {
 };
 
 const DEFAULT_SETTINGS = {
-  autoSendEnabled: false
+  autoSendEnabled: false,
+  formulationDelay: 60000,
+  executionDelay: 180000
 };
 
 function generateUUID() {
@@ -270,7 +272,8 @@ const MessageType = {
   QUEUE_UPDATED: 'QUEUE_UPDATED',
   TOGGLE_AUTO_SEND: 'TOGGLE_AUTO_SEND',
   START_PROCESSING: 'START_PROCESSING',
-  SEND_NEXT: 'SEND_NEXT'
+  SEND_NEXT: 'SEND_NEXT',
+  STOP_PROCESSING: 'STOP_PROCESSING'
 };
 
 const STATUS_MESSAGES = {
@@ -281,7 +284,9 @@ const STATUS_MESSAGES = {
   paused: 'Paused (tab not focused)'
 };
 
-let currentSettings = { autoSendEnabled: false };
+let currentSettings = { autoSendEnabled: false,
+  formulationDelay: 60000,
+  executionDelay: 180000 };
 let currentTabInfo = { url: null, isSupported: false, siteName: null };
 
 // =============================================================================
@@ -309,6 +314,9 @@ function initializeElements() {
   elements.addToQueueBtn = getRequiredElement('#add-to-queue-btn');
   elements.autoSendToggle = getRequiredElement('#auto-send-toggle');
   elements.sendNextBtn = getRequiredElement('#send-next-btn');
+  elements.stopQueueBtn = getRequiredElement('#stop-queue-btn');
+  elements.formDelayInput = getRequiredElement('#setting-form-delay');
+  elements.execDelayInput = getRequiredElement('#setting-exec-delay');
 
   elements.queueList = getRequiredElement('#queue-list');
   elements.queueCount = getRequiredElement('#queue-count');
@@ -434,6 +442,27 @@ function attachEventListeners() {
 
   elements.autoSendToggle.addEventListener('change', handleToggleChange);
   elements.sendNextBtn.addEventListener('click', handleSendNext);
+  elements.stopQueueBtn.addEventListener('click', (e) => {
+    e.target.disabled = true;
+    e.target.innerHTML = '<span class="btn-icon-left">&#8987;</span> Stopping...';
+    notifyServiceWorker(MessageType.STOP_PROCESSING);
+  });
+  elements.formDelayInput.addEventListener('change', (e) => {
+    const orig = parseInt(e.target.value, 10);
+    const valSec = Math.max(1, Math.min(600, orig || 60));
+    e.target.value = valSec;
+    if (orig !== valSec) showStatusMessage('Delay constrained to 1-600s limits', 'warning');
+    currentSettings.formulationDelay = valSec * 1000;
+    storage.saveSettings(currentSettings).then(() => showStatusMessage('Delay saved', 'success'));
+  });
+  elements.execDelayInput.addEventListener('change', (e) => {
+    const orig = parseInt(e.target.value, 10);
+    const valSec = Math.max(1, Math.min(600, orig || 180));
+    e.target.value = valSec;
+    if (orig !== valSec) showStatusMessage('Delay constrained to 1-600s limits', 'warning');
+    currentSettings.executionDelay = valSec * 1000;
+    storage.saveSettings(currentSettings).then(() => showStatusMessage('Delay saved', 'success'));
+  });
 
   elements.saveQueueBtn.addEventListener('click', handleSaveQueue);
   elements.clearAllBtn.addEventListener('click', handleClearAll);
@@ -562,6 +591,7 @@ function generateLibraryCardHTML(chain) {
       </div>
       <div class="library-chain-meta">${escapeHtml(promptCount)}</div>
       <div class="library-chain-actions">
+        <button class="btn btn-secondary btn-small" data-action="toggle-edit" title="View/Edit Prompts">Edit</button>
         <button class="btn btn-primary btn-small" data-action="load-overwrite" title="Replace current queue" style="display: flex; align-items: center; justify-content: center; gap: 6px;">
           <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 2v6h-6"></path><path d="M3 12a9 9 0 0 1 15-6.7L21 8"></path><path d="M3 22v-6h6"></path><path d="M21 12a9 9 0 0 1-15 6.7L3 16"></path></svg>
           Overwrite
@@ -573,6 +603,14 @@ function generateLibraryCardHTML(chain) {
         <button class="btn btn-danger btn-small btn-icon" data-action="delete" title="Delete chain">
           <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path><line x1="10" y1="11" x2="10" y2="17"></line><line x1="14" y1="11" x2="14" y2="17"></line></svg>
         </button>
+      </div>
+      <div class="library-chain-editor" style="display: none; margin-top: 10px; border-top: 1px solid var(--color-border-light); padding-top: 10px;">
+        <div class="editor-prompts" style="max-height: 250px; overflow-y: auto; padding-right: 5px;"></div>
+        <div style="display: flex; gap: 8px; margin-top: 10px;">
+          <button class="btn btn-primary btn-small" data-action="save-edit">Save Changes</button>
+          <button class="btn btn-secondary btn-small" data-action="save-new">Save as Copy</button>
+          <button class="btn btn-secondary btn-small" data-action="cancel-edit">Cancel</button>
+        </div>
       </div>
     </div>
   `;
@@ -613,6 +651,49 @@ async function handleLibraryAction(e) {
     const queue = await storage.getQueue();
     if (queue.length > 0 && !confirm('This will overwrite your current active queue. Continue?')) return;
     await processLoadChainRequest(chainId, false);
+  } else if (action === 'toggle-edit') {
+    const editor = target.closest('.library-chain-card').querySelector('.library-chain-editor');
+    const promptsContainer = editor.querySelector('.editor-prompts');
+    if (editor.style.display === 'none') {
+      storage.getLibrary().then(lib => {
+        const chain = lib.find(c => c.id === chainId);
+        if (chain) {
+          promptsContainer.innerHTML = chain.prompts.map((p, i) => `<textarea class="prompt-input" data-index="${i}" style="margin-bottom: 8px; width:100%; min-height:60px;">${escapeHtml(p.prompt)}</textarea>`).join('');
+          editor.style.display = 'block';
+        }
+      });
+    } else {
+      editor.style.display = 'none';
+    }
+  } else if (action === 'cancel-edit') {
+    target.closest('.library-chain-editor').style.display = 'none';
+  } else if (action === 'save-edit' || action === 'save-new') {
+    const card = target.closest('.library-chain-card');
+    const textareas = card.querySelectorAll('textarea');
+    const btn = target;
+    const isNew = action === 'save-new';
+    
+    btn.disabled = true;
+    btn.textContent = 'Saving...';
+    
+    storage.getLibrary().then(async lib => {
+      const chainIndex = lib.findIndex(c => c.id === chainId);
+      if (chainIndex > -1) {
+        const newPrompts = Array.from(textareas).map(ta => ({ prompt: ta.value.trim(), variables: [...ta.value.matchAll(/\{\{([^}]+)\}\}/g)].map(m => m[1].trim()) })).filter(p => p.prompt.length > 0);
+        if (newPrompts.length === 0) { showStatusMessage('Cannot save empty chain.', 'error'); btn.disabled = false; btn.textContent = isNew ? 'Save as Copy' : 'Save Changes'; return; }
+        
+        if (isNew) {
+           lib.push({ id: generateUUID(), name: lib[chainIndex].name + ' - Copy', createdAt: Date.now(), prompts: newPrompts });
+        } else {
+           lib[chainIndex].prompts = newPrompts;
+        }
+        
+        await chrome.storage.local.set({ promptLibrary: lib }).catch(e => { showStatusMessage(e.message, 'error'); throw e; });
+        renderLibrary(lib);
+        showStatusMessage(isNew ? 'Chain cloned successfully' : 'Chain updated successfully', 'success');
+      }
+    }).catch(() => { btn.disabled = false; btn.textContent = isNew ? 'Save as Copy' : 'Save Changes'; });
+  
   } else if (action === 'load-append') {
     await processLoadChainRequest(chainId, true);
   }
@@ -765,6 +846,8 @@ async function handleToggleChange() {
 function updateSettingsUI(settings) {
   elements.autoSendToggle.checked = settings.autoSendEnabled;
   elements.autoSendToggle.setAttribute('aria-checked', settings.autoSendEnabled.toString());
+  if (elements.formDelayInput) elements.formDelayInput.value = (settings.formulationDelay || 60000) / 1000;
+  if (elements.execDelayInput) elements.execDelayInput.value = (settings.executionDelay || 180000) / 1000;
 }
 
 async function handleSendNext() {
@@ -806,6 +889,13 @@ function updateSendNextButtonState(queueLength) {
   if (!elements.sendNextBtn) return;
   const shouldShow = !currentSettings.autoSendEnabled && currentTabInfo.isSupported && queueLength > 0;
   elements.sendNextBtn.style.display = shouldShow ? 'flex' : 'none';
+  if (elements.stopQueueBtn) {
+    elements.stopQueueBtn.style.display = currentSettings.autoSendEnabled ? 'flex' : 'none';
+    if (!currentSettings.autoSendEnabled) {
+      elements.stopQueueBtn.disabled = false;
+      elements.stopQueueBtn.innerHTML = '<span class="btn-icon-left">&#9632;</span> Stop Auto-Run';
+    }
+  }
   elements.sendNextBtn.disabled = !currentTabInfo.isSupported || queueLength === 0;
 }
 
@@ -841,7 +931,7 @@ function renderQueue(queueData) {
         <span class="queue-item-drag-handle" style="cursor: grab; font-size: 1.2rem; color: var(--color-text-tertiary); padding-right: 8px;" title="Drag to reorder">&#9776;</span>
         <span class="queue-item-number">${index + 1}</span>
         <div class="queue-item-content">
-          <p class=\"queue-item-text\" title=\"Double-click to edit&#10;${escapeHtml(item.prompt)}\" style=\"cursor: text;\">${escapeHtml(truncatedPrompt)}</p>
+          <p class="queue-item-text" title="Double-click to edit&#10;${escapeHtml(item.prompt)}" style="cursor: text;">${escapeHtml(truncatedPrompt)}</p>
         </div>
         <div class="queue-item-actions">
           <button class="btn btn-icon btn-delete" data-action="delete" title="Delete">&#10005;</button>
@@ -873,6 +963,16 @@ function escapeHtml(text) {
 function updateSiteStatus(connected, text) {
   elements.siteStatus.setAttribute('data-connected', connected.toString());
   elements.siteText.textContent = text;
+}
+
+
+function lockActiveQueueItem(isLocked) {
+  const firstItem = document.querySelector('#queue-list .queue-item');
+  if (firstItem) {
+    firstItem.style.pointerEvents = isLocked ? 'none' : 'auto';
+    firstItem.style.opacity = isLocked ? '0.5' : '1';
+    firstItem.style.filter = isLocked ? 'grayscale(100%)' : 'none';
+  }
 }
 
 function updateStatusIndicator(status) {
@@ -917,7 +1017,10 @@ async function requestCurrentStatus() {
     const response = await chrome.runtime.sendMessage({ type: MessageType.GET_STATUS });
     if (response && response.success && response.data) {
       if (response.data.processingState) updateStatusIndicator(response.data.processingState);
-      if (typeof response.data.autoSendEnabled === 'boolean') {
+      if (response.data.processingState === 'awaiting_user_input' && response.data.neededPrompts) {
+          renderVariableModal({ neededPrompts: response.data.neededPrompts });
+        }
+        if (typeof response.data.autoSendEnabled === 'boolean') {
         currentSettings.autoSendEnabled = response.data.autoSendEnabled;
         updateSettingsUI(currentSettings);
       }
@@ -995,11 +1098,20 @@ function handleStateUpdate(payload) {
   if (!payload) return;
 
   switch (payload.type) {
+    
     case 'SENDING_PROMPT':
+      lockActiveQueueItem(true);
       updateStatusIndicator('sending_prompt');
       showStatusMessage('Sending prompt...', 'info');
       break;
+    case 'RECOVERING_PAGE_REFRESH':
+      lockActiveQueueItem(true);
+      updateStatusIndicator('waiting');
+      showStatusMessage(`Page reloaded. Recovering prompt (Attempt ${payload.retryCount})...`, 'warning', { persist: true });
+      break;
     case 'PAUSED_FOR_ERROR':
+      lockActiveQueueItem(false);
+
       updateStatusIndicator('paused');
       showStatusMessage('Queue paused due to rate limit.', 'warning');
       renderErrorPauseModal(payload);
@@ -1022,9 +1134,12 @@ function handleStateUpdate(payload) {
       storage.saveSettings(currentSettings);
       break;
     case 'PROCESSING_STOPPED':
+      lockActiveQueueItem(false);
       updateStatusIndicator('idle');
       break;
     case 'PROCESSING_ERROR':
+      lockActiveQueueItem(false);
+
       updateStatusIndicator('idle');
       showStatusMessage(payload.error || 'Processing error', 'error');
       break;
