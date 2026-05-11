@@ -270,8 +270,7 @@ body {
   flex-direction: column;
   flex: 1;
   min-height: 0;
-  overflow-y: auto;
-  overflow-x: hidden;
+  overflow: hidden;
 }
 
 .view-section.active-view {
@@ -537,11 +536,11 @@ width: auto;
    Queue Section
    -------------------------------------------------------------------------- */
 .queue-section {
-  flex: 1 0 auto;
+  flex: 1;
   display: flex;
   flex-direction: column;
   min-height: 0;
-  overflow: visible;
+  overflow: hidden;
 }
 
 .queue-header {
@@ -565,8 +564,8 @@ width: auto;
 }
 
 .queue-list {
-  flex: 1 0 auto;
-  overflow: visible;
+  flex: 1;
+  overflow-y: auto;
   padding: var(--spacing-sm) var(--spacing-lg);
   background-color: var(--color-bg-secondary);
 }
@@ -733,11 +732,11 @@ width: auto;
    Library Section
    -------------------------------------------------------------------------- */
 .library-section {
-  flex: 1 0 auto;
+  flex: 1;
   display: flex;
   flex-direction: column;
   min-height: 0;
-  overflow: visible;
+  overflow: hidden;
 }
 
 .library-header {
@@ -753,8 +752,8 @@ width: auto;
 }
 
 .library-list {
-  flex: 1 0 auto;
-  overflow: visible;
+  flex: 1;
+  overflow-y: auto;
   padding: var(--spacing-sm) var(--spacing-lg);
   background-color: var(--color-bg-secondary);
 }
@@ -1070,41 +1069,3 @@ width: auto;
   margin-top: -2px;
   margin-left: -4px;
 }
-
-/* --- INJECTED: Active Processing State --- */
-.queue-item.active-processing {
-  border-color: var(--color-primary);
-  background-color: var(--color-info-bg);
-  box-shadow: 0 0 0 1px var(--color-primary);
-  transform: none !important;
-}
-.queue-item.active-processing .queue-item-number {
-  background-color: var(--color-primary);
-  color: #ffffff;
-  animation: pulse 1.5s ease-in-out infinite;
-}
-.queue-item.active-processing .queue-item-drag-handle,
-.queue-item.active-processing .queue-item-actions {
-  opacity: 0.3;
-  pointer-events: none;
-}
-
-/* --------------------------------------------------------------------------
-   Execution Footer (Unified Sticky Dock)
-   -------------------------------------------------------------------------- */
-.execution-footer {
-  margin-top: auto;
-  border-top: 1px solid var(--color-border-light);
-  background-color: var(--color-bg-primary);
-  z-index: 100;
-  flex-shrink: 0;
-  box-shadow: 0 -8px 16px rgba(0, 0, 0, 0.1);
-  position: sticky;
-  bottom: 0;
-}
-
-/* Retarget custom scrollbar styling to the new scrolling viewport */
-.view-section::-webkit-scrollbar { width: 6px; }
-.view-section::-webkit-scrollbar-track { background: transparent; }
-.view-section::-webkit-scrollbar-thumb { background-color: var(--color-border); border-radius: var(--radius-full); }
-.view-section::-webkit-scrollbar-thumb:hover { background-color: var(--color-text-tertiary); }

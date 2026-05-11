@@ -972,11 +972,9 @@ function updateSiteStatus(connected, text) {
 function lockActiveQueueItem(isLocked) {
   const firstItem = document.querySelector('#queue-list .queue-item');
   if (firstItem) {
-    if (isLocked) {
-      firstItem.classList.add('active-processing');
-    } else {
-      firstItem.classList.remove('active-processing');
-    }
+    firstItem.style.pointerEvents = isLocked ? 'none' : 'auto';
+    firstItem.style.opacity = isLocked ? '0.5' : '1';
+    firstItem.style.filter = isLocked ? 'grayscale(100%)' : 'none';
   }
 }
 
@@ -1266,10 +1264,6 @@ async function handleQueueItemDoubleClick(e) {
   if (!textEl) return;
 
   const itemEl = textEl.closest('.queue-item');
-  if (itemEl.classList.contains('active-processing')) {
-    showStatusMessage('Cannot edit a prompt while it is processing.', 'warning');
-    return;
-  }
   const itemId = itemEl.dataset.id;
 
   // Fetch the fresh, un-truncated prompt from the SSOT storage
