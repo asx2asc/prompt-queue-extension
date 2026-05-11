@@ -1021,9 +1021,6 @@ async function requestCurrentStatus() {
     const response = await chrome.runtime.sendMessage({ type: MessageType.GET_STATUS });
     if (response && response.success && response.data) {
       if (response.data.processingState) updateStatusIndicator(response.data.processingState);
-      if (response.data.activeCountdown && response.data.processingState === 'sending_prompt') {
-        handleStateUpdate({ type: 'COUNTDOWN_UPDATE', ...response.data.activeCountdown });
-      }
       if (response.data.processingState === 'awaiting_user_input' && response.data.neededPrompts) {
           renderVariableModal({ neededPrompts: response.data.neededPrompts });
         }
@@ -1107,26 +1104,11 @@ function handleStateUpdate(payload) {
     
     case 'COUNTDOWN_UPDATE':
       if (elements.progressContainer) {
-        const PREMIUM_CONTEXTS = {
-          'Formulating': '<strong>Reason:</strong> Bypassing bot-detection algorithms.<br><strong>Action:</strong> Simulating human cognitive delay to ensure prompt acceptance and platform stability.',
-          'Executing': '<strong>Reason:</strong> Respecting strict AI rate limits.<br><strong>Action:</strong> Holding execution to guarantee delivery without triggering an account throttle.'
-        };
-        const descriptionEl = document.getElementById('progress-description-text');
-        
         elements.progressContainer.style.display = 'block';
         elements.progressPhase.textContent = payload.phase + '...';
-        
-        const rM = Math.floor(payload.remaining / 60);
-        const rS = payload.remaining % 60;
-        const tM = Math.floor(payload.total / 60);
-        const tS = payload.total % 60;
-        
-        elements.progressTime.textContent = `${rM > 0 ? rM + 'm ' : ''}${rS}s remaining of ${tM > 0 ? tM + 'm ' : ''}${tS}s`;
-        
-        if (descriptionEl) {
-          descriptionEl.innerHTML = PREMIUM_CONTEXTS[payload.phase] || '<strong>Action:</strong> Processing queue pacing requirements.';
-        }
-        
+        const m = Math.floor(payload.remaining / 60);
+        const s = payload.remaining % 60;
+        elements.progressTime.textContent = (m > 0 ? m + 'm ' : '') + s + 's';
         const percent = payload.total > 0 ? ((payload.total - payload.remaining) / payload.total) * 100 : 100;
         elements.progressFill.style.width = percent + '%';
       }
