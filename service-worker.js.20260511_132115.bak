@@ -182,8 +182,11 @@ class StateManager {
       }
 
       // Unify Settings Data Model: Map popup's settings object to background state
-      if (stored.settings && typeof stored.settings.autoSendEnabled === 'boolean') {
-        this._state.set('autoSendEnabled', stored.settings.autoSendEnabled, false);
+      if (stored.settings) {
+        this._state.set('settings', stored.settings, false);
+        if (typeof stored.settings.autoSendEnabled === 'boolean') {
+          this._state.set('autoSendEnabled', stored.settings.autoSendEnabled, false);
+        }
       }
 
       // Set defaults for required state
@@ -463,7 +466,8 @@ function getCurrentStatus() {
     autoSendEnabled: stateManager.get('autoSendEnabled'),
     currentTabId: currentTabId,
     connectedSite: currentTabId ? tabSiteMap[currentTabId] || null : null,
-    queueLength: (stateManager.get('promptQueue') || []).length
+    queueLength: (stateManager.get('promptQueue') || []).length,
+    activeCountdown: stateManager.get('activeCountdown') || null
   };
 }
 
@@ -478,6 +482,7 @@ function getCurrentStatus() {
 class QueueProcessor {
   constructor() {
     this._processing = false;
+    this.activePromptId = null;
   }
 
   /**
@@ -584,6 +589,7 @@ class QueueProcessor {
 
     delete queue[0].retryCount; // Purge stale retry data
     const nextItem = queue[0];
+    this.activePromptId = nextItem.id;
     let resolvedPromptText = nextItem.prompt;
 
     // EPHEMERAL COMPILATION
@@ -648,7 +654,8 @@ class QueueProcessor {
       logger.info('Generation verified successful, mutating queue');
       const queue = stateManager.get('promptQueue') ||[];
       if (queue.length > 0) {
-        const updatedQueue = queue.slice(1);
+        // SAFE FILTER: Only remove the exact prompt that initiated generation
+        const updatedQueue = queue.filter(item => item.id !== this.activePromptId);
         stateManager.set('promptQueue', updatedQueue);
       }
     } else if (payload.reason === 'rate_limit') {
@@ -705,9 +712,13 @@ class QueueProcessor {
     const currentState = stateManager.get('processingState');
     if (currentState !== ProcessingState.IDLE) return { sent: false, error: 'Currently processing another prompt' };
 
-    const currentTabId = stateManager.get('currentTabId');
-    const tabSiteMap = stateManager.get('tabSiteMap') || {};
-    if (!currentTabId || !tabSiteMap[currentTabId]) return { sent: false, error: 'Navigate to a supported LLM site' };
+    let currentTabId = stateManager.get('currentTabId');
+          const tabSiteMap = stateManager.get('tabSiteMap') || {};
+          if (!currentTabId || !tabSiteMap[currentTabId]) {
+            const availableTabs = Object.keys(tabSiteMap);
+            if (availableTabs.length > 0) currentTabId = parseInt(availableTabs[availableTabs.length - 1], 10);
+            else return { sent: false, error: 'Navigate to a supported LLM site' };
+          }
 
     const queue = stateManager.get('promptQueue') ||[];
     if (queue.length === 0) return { sent: false, error: 'Queue is empty' };
@@ -748,6 +759,7 @@ class QueueProcessor {
 
     delete queue[0].retryCount; // Purge stale retry data
     const nextItem = queue[0];
+    this.activePromptId = nextItem.id;
     let resolvedPromptText = nextItem.prompt;
 
     // EPHEMERAL COMPILATION
@@ -1063,7 +1075,7 @@ class TabTracker {
    */
   async initialize() {
     try {
-      const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      const [activeTab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
       if (activeTab) {
         stateManager.set('currentTabId', activeTab.id, false);
 
@@ -1214,7 +1226,7 @@ class MessageRouter {
             // If we don't have tab info, try to get it directly
             if (!currentTabId || !tabSiteMap[currentTabId]) {
               try {
-                const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+                const [activeTab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
                 if (activeTab) {
                   currentTabId = activeTab.id;
                   const siteType = getSiteFromUrl(activeTab.url);
@@ -1229,6 +1241,13 @@ class MessageRouter {
                 logger.warn('Could not query active tab:', e);
               }
             }
+              if (!currentTabId || !tabSiteMap[currentTabId]) {
+                const availableTabs = Object.keys(tabSiteMap);
+                if (availableTabs.length > 0) {
+                  currentTabId = parseInt(availableTabs[availableTabs.length - 1], 10);
+                  logger.info('Fallback applied: Inheriting active LLM tab ID from tabSiteMap ->', currentTabId);
+                }
+              }
 
             logger.info('TOGGLE_AUTO_SEND - currentTabId:', currentTabId, 'tabSiteMap:', tabSiteMap);
 
@@ -1286,7 +1305,7 @@ class MessageRouter {
 
             if (!currentTabId || !tabSiteMap[currentTabId]) {
               try {
-                const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+                const [activeTab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
                 if (activeTab) {
                   currentTabId = activeTab.id;
                   const siteType = getSiteFromUrl(activeTab.url);
@@ -1300,6 +1319,13 @@ class MessageRouter {
                 logger.warn('Could not query active tab:', e);
               }
             }
+              if (!currentTabId || !tabSiteMap[currentTabId]) {
+                const availableTabs = Object.keys(tabSiteMap);
+                if (availableTabs.length > 0) {
+                  currentTabId = parseInt(availableTabs[availableTabs.length - 1], 10);
+                  logger.info('Fallback applied: Inheriting active LLM tab ID from tabSiteMap ->', currentTabId);
+                }
+              }
 
             if (currentTabId && tabSiteMap[currentTabId]) {
               focusManager.setProcessingTab(currentTabId);
@@ -1430,7 +1456,7 @@ class MessageRouter {
               return { acknowledged: true };
             }
             stateManager.set('promptQueue', queue, false);
-            notifyPopup({ type: 'STATE_UPDATE', payload: { type: 'RECOVERING_PAGE_REFRESH', retryCount: queue[0].retryCount } });
+            notifyPopup({ type: 'RECOVERING_PAGE_REFRESH', retryCount: queue[0].retryCount });
           }
           setTimeout(() => queueProcessor.startProcessing(), 3000);
         }
@@ -1448,7 +1474,9 @@ class MessageRouter {
         return { acknowledged: true };
         
       case 'COUNTDOWN_UPDATE':
-        notifyPopup({ type: 'STATE_UPDATE', payload: { type: 'COUNTDOWN_UPDATE', phase: payload.phase, remaining: payload.remaining, total: payload.total } });
+        if (stateManager.get('processingState') === ProcessingState.IDLE) return { acknowledged: true };
+        stateManager.set('activeCountdown', payload, false);
+        notifyPopup({ type: 'COUNTDOWN_UPDATE', phase: payload.phase, remaining: payload.remaining, total: payload.total });
         return { acknowledged: true };
         
       case 'ERROR':
@@ -1545,6 +1573,16 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
     const newValue = changes.autoSendEnabled.newValue || false;
     stateManager.set('autoSendEnabled', newValue, false); // Don't persist back
     logger.info('Auto-send synced from storage:', newValue);
+  }
+
+  // Sync settings changes
+  if (changes.settings) {
+    const newSettings = changes.settings.newValue || {};
+    stateManager.set('settings', newSettings, false);
+    if (typeof newSettings.autoSendEnabled === 'boolean') {
+      stateManager.set('autoSendEnabled', newSettings.autoSendEnabled, false);
+    }
+    logger.info('Settings synced from storage:', newSettings);
   }
 });
 

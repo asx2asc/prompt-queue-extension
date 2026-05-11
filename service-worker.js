@@ -628,6 +628,11 @@ class QueueProcessor {
       }
     } catch (error) {
       logger.error('Error processing queue item:', error);
+      if (error.message && error.message.includes('message port closed')) {
+        logger.warn('Message port closed prematurely. Transitioning to WAITING_FOR_RESPONSE to preserve queue sync.');
+        stateManager.set('processingState', ProcessingState.WAITING_FOR_RESPONSE);
+        return;
+      }
       stateManager.set('processingState', ProcessingState.IDLE);
       notifyPopup({ type: 'PROCESSING_ERROR', error: error.message, item: nextItem });
     }
@@ -670,6 +675,15 @@ class QueueProcessor {
         message: "you've ran out of credits on 'aistudio.google.com' please tap the below ready button when you are ready to read attempt this prompt and continue"
       });
       return; // Halt execution completely
+    } else if (payload.reason === 'timeout') {
+      logger.warn(`Generation timed out. Transitioning to PAUSED_FOR_ERROR.`);
+      stateManager.set('processingState', ProcessingState.PAUSED_FOR_ERROR);
+      notifyPopup({ 
+        type: 'PAUSED_FOR_ERROR', 
+        errorType: 'timeout',
+        message: "Generation monitoring timed out (> 5 mins). The AI may still be working or finished silently. Verify the output, then click 'Ready' to continue the queue."
+      });
+      return;
     } else {
       logger.warn(`Generation failed for unknown reason: ${payload.reason}. Queue slice aborted.`);
       stateManager.set('processingState', ProcessingState.IDLE);
@@ -712,9 +726,13 @@ class QueueProcessor {
     const currentState = stateManager.get('processingState');
     if (currentState !== ProcessingState.IDLE) return { sent: false, error: 'Currently processing another prompt' };
 
-    const currentTabId = stateManager.get('currentTabId');
-    const tabSiteMap = stateManager.get('tabSiteMap') || {};
-    if (!currentTabId || !tabSiteMap[currentTabId]) return { sent: false, error: 'Navigate to a supported LLM site' };
+    let currentTabId = stateManager.get('currentTabId');
+          const tabSiteMap = stateManager.get('tabSiteMap') || {};
+          if (!currentTabId || !tabSiteMap[currentTabId]) {
+            const availableTabs = Object.keys(tabSiteMap);
+            if (availableTabs.length > 0) currentTabId = parseInt(availableTabs[availableTabs.length - 1], 10);
+            else return { sent: false, error: 'Navigate to a supported LLM site' };
+          }
 
     const queue = stateManager.get('promptQueue') ||[];
     if (queue.length === 0) return { sent: false, error: 'Queue is empty' };
@@ -1071,7 +1089,7 @@ class TabTracker {
    */
   async initialize() {
     try {
-      const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      const [activeTab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
       if (activeTab) {
         stateManager.set('currentTabId', activeTab.id, false);
 
@@ -1222,7 +1240,7 @@ class MessageRouter {
             // If we don't have tab info, try to get it directly
             if (!currentTabId || !tabSiteMap[currentTabId]) {
               try {
-                const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+                const [activeTab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
                 if (activeTab) {
                   currentTabId = activeTab.id;
                   const siteType = getSiteFromUrl(activeTab.url);
@@ -1237,6 +1255,20 @@ class MessageRouter {
                 logger.warn('Could not query active tab:', e);
               }
             }
+              if (!currentTabId || !tabSiteMap[currentTabId]) {
+                const availableTabs = Object.keys(tabSiteMap);
+                if (availableTabs.length > 0) {
+                  currentTabId = parseInt(availableTabs[availableTabs.length - 1], 10);
+                  logger.info('Fallback applied: Inheriting active LLM tab ID from tabSiteMap ->', currentTabId);
+                }
+              }
+              if (!currentTabId || !tabSiteMap[currentTabId]) {
+                const availableTabs = Object.keys(tabSiteMap);
+                if (availableTabs.length > 0) {
+                  currentTabId = parseInt(availableTabs[availableTabs.length - 1], 10);
+                  logger.info('Fallback applied: Inheriting active LLM tab ID from tabSiteMap ->', currentTabId);
+                }
+              }
 
             logger.info('TOGGLE_AUTO_SEND - currentTabId:', currentTabId, 'tabSiteMap:', tabSiteMap);
 
@@ -1294,7 +1326,7 @@ class MessageRouter {
 
             if (!currentTabId || !tabSiteMap[currentTabId]) {
               try {
-                const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+                const [activeTab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
                 if (activeTab) {
                   currentTabId = activeTab.id;
                   const siteType = getSiteFromUrl(activeTab.url);
@@ -1308,6 +1340,20 @@ class MessageRouter {
                 logger.warn('Could not query active tab:', e);
               }
             }
+              if (!currentTabId || !tabSiteMap[currentTabId]) {
+                const availableTabs = Object.keys(tabSiteMap);
+                if (availableTabs.length > 0) {
+                  currentTabId = parseInt(availableTabs[availableTabs.length - 1], 10);
+                  logger.info('Fallback applied: Inheriting active LLM tab ID from tabSiteMap ->', currentTabId);
+                }
+              }
+              if (!currentTabId || !tabSiteMap[currentTabId]) {
+                const availableTabs = Object.keys(tabSiteMap);
+                if (availableTabs.length > 0) {
+                  currentTabId = parseInt(availableTabs[availableTabs.length - 1], 10);
+                  logger.info('Fallback applied: Inheriting active LLM tab ID from tabSiteMap ->', currentTabId);
+                }
+              }
 
             if (currentTabId && tabSiteMap[currentTabId]) {
               focusManager.setProcessingTab(currentTabId);
@@ -1438,7 +1484,7 @@ class MessageRouter {
               return { acknowledged: true };
             }
             stateManager.set('promptQueue', queue, false);
-            notifyPopup({ type: 'STATE_UPDATE', payload: { type: 'RECOVERING_PAGE_REFRESH', retryCount: queue[0].retryCount } });
+            notifyPopup({ type: 'RECOVERING_PAGE_REFRESH', retryCount: queue[0].retryCount });
           }
           setTimeout(() => queueProcessor.startProcessing(), 3000);
         }
@@ -1458,7 +1504,7 @@ class MessageRouter {
       case 'COUNTDOWN_UPDATE':
         if (stateManager.get('processingState') === ProcessingState.IDLE) return { acknowledged: true };
         stateManager.set('activeCountdown', payload, false);
-        notifyPopup({ type: 'STATE_UPDATE', payload: { type: 'COUNTDOWN_UPDATE', phase: payload.phase, remaining: payload.remaining, total: payload.total } });
+        notifyPopup({ type: 'COUNTDOWN_UPDATE', phase: payload.phase, remaining: payload.remaining, total: payload.total });
         return { acknowledged: true };
         
       case 'ERROR':

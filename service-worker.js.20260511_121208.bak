@@ -182,8 +182,11 @@ class StateManager {
       }
 
       // Unify Settings Data Model: Map popup's settings object to background state
-      if (stored.settings && typeof stored.settings.autoSendEnabled === 'boolean') {
-        this._state.set('autoSendEnabled', stored.settings.autoSendEnabled, false);
+      if (stored.settings) {
+        this._state.set('settings', stored.settings, false);
+        if (typeof stored.settings.autoSendEnabled === 'boolean') {
+          this._state.set('autoSendEnabled', stored.settings.autoSendEnabled, false);
+        }
       }
 
       // Set defaults for required state
@@ -463,7 +466,8 @@ function getCurrentStatus() {
     autoSendEnabled: stateManager.get('autoSendEnabled'),
     currentTabId: currentTabId,
     connectedSite: currentTabId ? tabSiteMap[currentTabId] || null : null,
-    queueLength: (stateManager.get('promptQueue') || []).length
+    queueLength: (stateManager.get('promptQueue') || []).length,
+    activeCountdown: stateManager.get('activeCountdown') || null
   };
 }
 
@@ -1453,6 +1457,7 @@ class MessageRouter {
         
       case 'COUNTDOWN_UPDATE':
         if (stateManager.get('processingState') === ProcessingState.IDLE) return { acknowledged: true };
+        stateManager.set('activeCountdown', payload, false);
         notifyPopup({ type: 'STATE_UPDATE', payload: { type: 'COUNTDOWN_UPDATE', phase: payload.phase, remaining: payload.remaining, total: payload.total } });
         return { acknowledged: true };
         
@@ -1550,6 +1555,16 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
     const newValue = changes.autoSendEnabled.newValue || false;
     stateManager.set('autoSendEnabled', newValue, false); // Don't persist back
     logger.info('Auto-send synced from storage:', newValue);
+  }
+
+  // Sync settings changes
+  if (changes.settings) {
+    const newSettings = changes.settings.newValue || {};
+    stateManager.set('settings', newSettings, false);
+    if (typeof newSettings.autoSendEnabled === 'boolean') {
+      stateManager.set('autoSendEnabled', newSettings.autoSendEnabled, false);
+    }
+    logger.info('Settings synced from storage:', newSettings);
   }
 });
 
