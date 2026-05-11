@@ -397,7 +397,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (area === 'local') {
       if (changes.promptQueue) renderQueue(changes.promptQueue.newValue ||[]);
       if (changes.promptLibrary) renderLibrary(changes.promptLibrary.newValue ||[]);
-      if (changes.settings && changes.settings.newValue) updateSettingsUI(changes.settings.newValue);
+      if (changes.settings && changes.settings.newValue)  {
+        currentSettings = { ...currentSettings, ...changes.settings.newValue };
+        updateSettingsUI(currentSettings);
+        storage.getQueue().then(q => updateSendNextButtonState(q.length));
+      }
     }
   });
 
@@ -1170,6 +1174,8 @@ function handleStateUpdate(payload) {
       storage.saveSettings(currentSettings);
       break;
     case 'PROCESSING_STOPPED':
+      currentSettings.autoSendEnabled = false;
+      storage.saveSettings(currentSettings);
       if (elements.progressContainer) elements.progressContainer.style.display = 'none';
       lockActiveQueueItem(false);
       updateStatusIndicator('idle');
@@ -1214,15 +1220,24 @@ function renderVariableModal(payload) {
 
   if (!payload.neededPrompts || payload.neededPrompts.length === 0) return;
 
-  container.innerHTML = payload.neededPrompts.map((p, index) => `
-    <div class="prompt-group" style="margin-bottom: var(--spacing-lg); padding-bottom: var(--spacing-sm); border-bottom: ${index !== payload.neededPrompts.length - 1 ? '1px solid var(--color-border-light)' : 'none'};">
-      <p class="input-hint" style="font-style: italic; color: var(--color-text-secondary); margin-bottom: var(--spacing-sm);">Snippet: "${escapeHtml(truncateText(p.prompt, 60))}"</p>
-      ${p.variables.map(variable => `
-        <div class="variable-input-group">
-          <label for="var-${escapeHtml(p.id)}-${escapeHtml(variable)}" class="input-label" style="text-transform: capitalize;">${escapeHtml(variable)}</label>
-          <input type="text" id="var-${escapeHtml(p.id)}-${escapeHtml(variable)}" name="${escapeHtml(p.id)}::${escapeHtml(variable)}" class="prompt-input" required autocomplete="off" style="min-height: 36px; padding: var(--spacing-sm) var(--spacing-md);">
-        </div>
-      `).join('')}
+  
+  const uniqueVarsMap = new Map();
+  payload.neededPrompts.forEach(p => {
+    p.variables.forEach(v => {
+      if (!uniqueVarsMap.has(v)) {
+        uniqueVarsMap.set(v, { name: v, snippet: truncateText(p.prompt, 60) });
+      }
+    });
+  });
+  const uniqueVars = Array.from(uniqueVarsMap.values());
+
+  container.innerHTML = uniqueVars.map((vData, index) => `
+    <div class="prompt-group" style="margin-bottom: var(--spacing-lg); padding-bottom: var(--spacing-sm); border-bottom: ${index !== uniqueVars.length - 1 ? '1px solid var(--color-border-light)' : 'none'};">
+      <div class="variable-input-group">
+        <label for="var-${escapeHtml(vData.name)}" class="input-label" style="text-transform: capitalize;">${escapeHtml(vData.name)}</label>
+        <p class="input-hint" style="font-style: italic; color: var(--color-text-secondary); margin-top: -4px; margin-bottom: var(--spacing-sm);">Found in: "${escapeHtml(vData.snippet)}"</p>
+        <input type="text" id="var-${escapeHtml(vData.name)}" name="${escapeHtml(vData.name)}" class="prompt-input" required autocomplete="off" style="min-height: 36px; padding: var(--spacing-sm) var(--spacing-md);">
+      </div>
     </div>
   `).join('');
 
@@ -1233,16 +1248,14 @@ function renderVariableModal(payload) {
   form.onsubmit = (e) => {
     e.preventDefault();
     const formData = new FormData(form);
-    const structuredVariables = {};
+    const flatVariables = {};
     
     for (const [key, value] of formData.entries()) {
-      const[promptId, varName] = key.split('::');
-      if (!structuredVariables[promptId]) structuredVariables[promptId] = {};
-      structuredVariables[promptId][varName] = value;
+      flatVariables[key] = value;
     }
     
     modal.hidden = true;
-    notifyServiceWorker('SUBMIT_VARIABLES', { variables: structuredVariables });
+    notifyServiceWorker('SUBMIT_VARIABLES', { variables: flatVariables });
     showStatusMessage('Compiling prompt and resuming...', 'info');
   };
 

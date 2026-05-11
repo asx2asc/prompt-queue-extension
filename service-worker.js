@@ -567,7 +567,7 @@ class QueueProcessor {
       }
       
       if (vars && vars.length > 0) {
-        const missingForThisPrompt = vars.filter(v => !runtimeVars[item.id] || !runtimeVars[item.id][v] || runtimeVars[item.id][v].trim() === '');
+        const missingForThisPrompt = vars.filter(v => !runtimeVars[v] || runtimeVars[v].trim() === '');
         if (missingForThisPrompt.length > 0) {
            neededPrompts.push({ id: item.id, prompt: item.prompt, variables: missingForThisPrompt });
         }
@@ -575,9 +575,10 @@ class QueueProcessor {
     });
 
     if (neededPrompts.length > 0) {
-      logger.info('Manual execution requires user input, yielding thread');
+      logger.info('Execution requires user input, yielding thread');
       stateManager.set('processingState', ProcessingState.AWAITING_USER_INPUT);
-      stateManager.set('pendingResumeAction', 'manual', false);
+      const resumeType = stateManager.get('autoSendEnabled') ? 'auto' : 'manual';
+      stateManager.set('pendingResumeAction', resumeType, false);
       
       stateManager.set('lastNeededPrompts', neededPrompts, false);
       notifyPopup({ 
@@ -603,7 +604,7 @@ class QueueProcessor {
       for (const v of varsToCompile) {
         const safeKey = v.replace(/[-\/\\^$*+?.()|\[\]{}]/g, '\\$&');
         const regex = new RegExp(`\\{\\\{\\s*${safeKey}\\s*\\}\\\}`, 'g');
-        const replacementValue = (runtimeVars[nextItem.id] && runtimeVars[nextItem.id][v]) ? runtimeVars[nextItem.id][v] : '';
+        const replacementValue = runtimeVars[v] ? runtimeVars[v] : '';
         resolvedPromptText = resolvedPromptText.replace(regex, replacementValue);
       }
     }
@@ -628,14 +629,25 @@ class QueueProcessor {
       }
     } catch (error) {
       logger.error('Error processing queue item:', error);
-      if (error.message && error.message.includes('message port closed')) {
-        logger.warn('Message port closed prematurely. Transitioning to WAITING_FOR_RESPONSE to preserve queue sync.');
-        stateManager.set('processingState', ProcessingState.WAITING_FOR_RESPONSE);
+      if (error.message && (error.message.includes('message port closed') || error.message.includes('message channel closed') || error.message.includes('Receiving end does not exist'))) {
+        logger.warn('Connection to tab interrupted (likely a page refresh). Pausing queue safely.');
+        stateManager.set('processingState', ProcessingState.PAUSED_FOR_ERROR);
+        notifyPopup({ 
+          type: 'PAUSED_FOR_ERROR', 
+          errorType: 'connection_lost',
+          message: "Connection to the AI tab was interrupted (the page may have been refreshed or closed). Please ensure the tab is ready, then click 'Ready' to resume."
+        });
         return;
       }
       stateManager.set('processingState', ProcessingState.IDLE);
+      stateManager.set('autoSendEnabled', false);
+      chrome.storage.local.get('settings').then(stored => {
+        const updatedSettings = stored.settings || {};
+        updatedSettings.autoSendEnabled = false;
+        chrome.storage.local.set({ settings: updatedSettings });
+      });
       notifyPopup({ type: 'PROCESSING_ERROR', error: error.message, item: nextItem });
-    }
+      }
   }
 
   /**
@@ -751,7 +763,7 @@ class QueueProcessor {
       }
       
       if (vars && vars.length > 0) {
-        const missingForThisPrompt = vars.filter(v => !runtimeVars[item.id] || !runtimeVars[item.id][v] || runtimeVars[item.id][v].trim() === '');
+        const missingForThisPrompt = vars.filter(v => !runtimeVars[v] || runtimeVars[v].trim() === '');
         if (missingForThisPrompt.length > 0) {
            neededPrompts.push({ id: item.id, prompt: item.prompt, variables: missingForThisPrompt });
         }
@@ -759,9 +771,10 @@ class QueueProcessor {
     });
 
     if (neededPrompts.length > 0) {
-      logger.info('Manual execution requires user input, yielding thread');
+      logger.info('Execution requires user input, yielding thread');
       stateManager.set('processingState', ProcessingState.AWAITING_USER_INPUT);
-      stateManager.set('pendingResumeAction', 'manual', false);
+      const resumeType = stateManager.get('autoSendEnabled') ? 'auto' : 'manual';
+      stateManager.set('pendingResumeAction', resumeType, false);
       
       stateManager.set('lastNeededPrompts', neededPrompts, false);
       notifyPopup({ 
@@ -787,7 +800,7 @@ class QueueProcessor {
       for (const v of varsToCompile) {
         const safeKey = v.replace(/[-\/\\^$*+?.()|\[\]{}]/g, '\\$&');
         const regex = new RegExp(`\\{\\\{\\s*${safeKey}\\s*\\}\\\}`, 'g');
-        const replacementValue = (runtimeVars[nextItem.id] && runtimeVars[nextItem.id][v]) ? runtimeVars[nextItem.id][v] : '';
+        const replacementValue = runtimeVars[v] ? runtimeVars[v] : '';
         resolvedPromptText = resolvedPromptText.replace(regex, replacementValue);
       }
     }
@@ -811,6 +824,16 @@ class QueueProcessor {
       }
     } catch (error) {
       logger.error('Error sending next item:', error);
+      if (error.message && (error.message.includes('message port closed') || error.message.includes('message channel closed') || error.message.includes('Receiving end does not exist'))) {
+        logger.warn('Connection to tab interrupted (likely a page refresh). Pausing queue safely.');
+        stateManager.set('processingState', ProcessingState.PAUSED_FOR_ERROR);
+        notifyPopup({ 
+          type: 'PAUSED_FOR_ERROR', 
+          errorType: 'connection_lost',
+          message: "Connection to the AI tab was interrupted (the page may have been refreshed or closed). Please ensure the tab is ready, then click 'Ready' to resume."
+        });
+        return { sent: false, error: 'connection_lost' };
+      }
       stateManager.set('processingState', ProcessingState.IDLE);
       notifyPopup({ type: 'PROCESSING_ERROR', error: error.message, item: nextItem });
       return { sent: false, error: error.message };
@@ -1019,7 +1042,7 @@ class TabTracker {
           queueProcessor.stop();
         const procTabId = focusManager.getProcessingTab() || stateManager.get('currentTabId');
         if (procTabId) {
-          chrome.tabs.sendMessage(procTabId, { type: 'ABORT_PROCESSING', source: 'background' }).catch(() => {});
+          sendToContentScript(procTabId, { type: 'ABORT_PROCESSING' }).catch(() => {});
         }
           notifyPopup({ type: 'PROCESSING_STOPPED', reason: 'tab_navigated_away' });
         }
@@ -1058,7 +1081,7 @@ class TabTracker {
       queueProcessor.stop();
         const procTabId = focusManager.getProcessingTab() || stateManager.get('currentTabId');
         if (procTabId) {
-          chrome.tabs.sendMessage(procTabId, { type: 'ABORT_PROCESSING', source: 'background' }).catch(() => {});
+          sendToContentScript(procTabId, { type: 'ABORT_PROCESSING' }).catch(() => {});
         }
       focusManager.clearProcessingTab();
       notifyPopup({ type: 'PROCESSING_STOPPED', reason: 'tab_closed' });
@@ -1216,15 +1239,6 @@ class MessageRouter {
 
       case PopupMessageType.TOGGLE_AUTO_SEND:
         const newAutoSendState = payload?.enabled ?? !stateManager.get('autoSendEnabled');
-        stateManager.set('autoSendEnabled', newAutoSendState);
-        
-        // Sync back to settings object so popup UI persists correctly
-        chrome.storage.local.get('settings').then(stored => {
-          const updatedSettings = stored.settings || {};
-          updatedSettings.autoSendEnabled = newAutoSendState;
-          chrome.storage.local.set({ settings: updatedSettings });
-        });
-        
         logger.info('Auto-send toggled:', newAutoSendState);
 
         if (newAutoSendState) {
@@ -1380,12 +1394,12 @@ class MessageRouter {
         await queueProcessor.startProcessing();
         return { started: true };
 
-      case PopupMessageType.STOP_PROCESSING:
+      case 'STOP_PROCESSING':
         logger.info('Stop processing explicitly requested');
         queueProcessor.stop();
         const procTabId = focusManager.getProcessingTab() || stateManager.get('currentTabId');
         if (procTabId) {
-          chrome.tabs.sendMessage(procTabId, { type: 'ABORT_PROCESSING', source: 'background' }).catch(() => {});
+          sendToContentScript(procTabId, { type: 'ABORT_PROCESSING' }).catch(() => {});
         }
         stateManager.set('autoSendEnabled', false);
         chrome.storage.local.get('settings').then(stored => {
@@ -1407,21 +1421,17 @@ class MessageRouter {
         return { cleared: true };
 
       case 'SUBMIT_VARIABLES':
-        logger.info('Received runtime variables, merging into nested runtime context');
-        
+        logger.info('Received runtime variables, merging into global runtime context');
+
         if (stateManager.get('processingState') !== ProcessingState.AWAITING_USER_INPUT) {
           return { error: 'Not currently awaiting input' };
         }
-        
-        // Push user's form submissions into the nested memory bank
+
+        // Store form submissions globally to apply to identical placeholders
         const currentVars = stateManager.get('runtimeVariables') || {};
         const incomingVars = payload.variables || {};
-        const newVars = { ...currentVars };
-        
-        for (const promptId in incomingVars) {
-           newVars[promptId] = { ...(newVars[promptId] || {}), ...incomingVars[promptId] };
-        }
-        
+        const newVars = { ...currentVars, ...incomingVars };
+
         stateManager.set('runtimeVariables', newVars, false);
         
         // Reset state and resume execution pipeline
@@ -1508,11 +1518,25 @@ class MessageRouter {
         return { acknowledged: true };
         
       case 'ERROR':
-        logger.error(`Error from tab ${tabId}:`, payload.message, payload.error);
-        if (stateManager.get('currentTabId') === tabId) {
-          stateManager.set('processingState', ProcessingState.IDLE);
-          notifyPopup({ type: 'PROCESSING_ERROR', error: payload.message });
+        
+        if (payload.type === 'navigation') {
+          logger.info(`Tab ${tabId} lifecycle event: ${payload.message}. Pausing queue.`);
+          if (stateManager.get('currentTabId') === tabId) {
+            stateManager.set('processingState', ProcessingState.PAUSED_FOR_ERROR);
+            notifyPopup({ type: 'PAUSED_FOR_ERROR', message: "Tab navigated away or refreshed. Queue paused safely." });
+          }
+          return { acknowledged: true };
         }
+        logger.error(`Error from tab ${tabId}:`, payload.message, payload.error);
+        
+        if (stateManager.get('currentTabId') === tabId) {
+          
+          stateManager.set('processingState', ProcessingState.IDLE);
+          
+          notifyPopup({ type: 'PROCESSING_ERROR', error: payload.message });
+        
+        }
+        
         return { acknowledged: true };
         
       default:
@@ -1558,6 +1582,13 @@ chrome.runtime.onStartup.addListener(async () => {
 
   // Reset processing state on startup (don't resume mid-process)
   stateManager.set('processingState', ProcessingState.IDLE);
+
+  stateManager.set('autoSendEnabled', false);
+  chrome.storage.local.get('settings').then(stored => {
+    const updatedSettings = stored.settings || {};
+    updatedSettings.autoSendEnabled = false;
+    chrome.storage.local.set({ settings: updatedSettings });
+  });
 });
 
 /**
