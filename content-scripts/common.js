@@ -672,13 +672,8 @@ function setupNavigationDetection() {
     log.debug('Visibility changed:', document.visibilityState);
 
     if (!isVisible && isProcessing) {
-      log.info('Tab became hidden while processing');
-      // Notify background that tab is hidden
-      sendToBackground('ERROR', {
-        message: 'Tab hidden during processing',
-        type: 'visibility',
-        isVisible: false
-      }).catch(() => {});
+      // Downgraded from ERROR to INFO. Background processing is a feature, not a failure.
+      log.info('Tab became hidden while processing. Background queueing active.');
     }
   });
 

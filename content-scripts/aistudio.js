@@ -458,9 +458,9 @@
 
             // Specific content evaluator for AI Studio rate limits
             const checkRateLimit = () => {
-              const responseContainers = document.querySelectorAll('ms-text-chunk, .response-container, .model-response,[class*="response"]');
-              for (const container of responseContainers) {
-                if (container.textContent && container.textContent.includes("error\nYou've reached your rate limit. Please try again later.")) {
+              const errorContainers = document.querySelectorAll('ms-text-chunk, .response-container, .model-response, [class*="response"], .model-error');
+              for (const container of errorContainers) {
+                if (container.textContent && container.textContent.includes("You've reached your rate limit. Please try again later.")) {
                   return 'rate_limit';
                 }
               }
