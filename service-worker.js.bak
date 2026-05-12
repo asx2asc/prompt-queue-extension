@@ -1401,14 +1401,21 @@ class MessageRouter {
         await queueProcessor.startProcessing();
         return { started: true };
 
-      case 'SKIP_DELAY': {
+      case 'SKIP_DELAY':
         logger.info('Skip delay explicitly requested');
         const targetTabId = focusManager.getProcessingTab() || stateManager.get('currentTabId');
         if (targetTabId) {
           sendToContentScript(targetTabId, { type: 'SKIP_COUNTDOWN' }).catch(() => {});
         }
         return { skipped: true };
-      }
+
+      case 'SKIP_DELAY':
+        logger.info('Skip delay explicitly requested');
+        const targetTabId = focusManager.getProcessingTab() || stateManager.get('currentTabId');
+        if (targetTabId) {
+          sendToContentScript(targetTabId, { type: 'SKIP_COUNTDOWN' }).catch(() => {});
+        }
+        return { skipped: true };
 
       case 'STOP_PROCESSING':
         logger.info('Stop processing explicitly requested');

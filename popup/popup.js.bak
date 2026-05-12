@@ -325,6 +325,7 @@ function initializeElements() {
   elements.progressTime = document.getElementById('progress-time-text');
   elements.progressFill = document.getElementById('progress-bar-fill');
   elements.skipDelayBtn = document.getElementById('skip-delay-btn');
+  elements.skipDelayBtn = document.getElementById('skip-delay-btn');
   elements.queueEmpty = getRequiredElement('.queue-empty');
   elements.saveQueueBtn = getRequiredElement('#save-queue-btn');
   elements.clearAllBtn = getRequiredElement('#clear-all-btn');
@@ -453,6 +454,10 @@ function attachEventListeners() {
   elements.promptInput.addEventListener('input', (e) => {
     chrome.storage.local.set({ draftPrompt: e.target.value });
   });
+  // Premium UI: Retain draft input on click-away
+  elements.promptInput.addEventListener('input', (e) => {
+    chrome.storage.local.set({ draftPrompt: e.target.value });
+  });
   elements.promptInput.addEventListener('keydown', (e) => {
     if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
       e.preventDefault();
@@ -486,6 +491,12 @@ function attachEventListeners() {
 
   elements.saveQueueBtn.addEventListener('click', handleSaveQueue);
   elements.clearAllBtn.addEventListener('click', handleClearAll);
+
+  if (elements.skipDelayBtn) {
+    elements.skipDelayBtn.addEventListener('click', () => {
+      notifyServiceWorker('SKIP_DELAY');
+    });
+  }
 
   if (elements.skipDelayBtn) {
     elements.skipDelayBtn.addEventListener('click', () => {
@@ -1296,6 +1307,7 @@ function renderVariableModal(payload) {
       flatVariables[key] = value;
     }
     
+    chrome.storage.local.remove('draftVariables'); // Clear drafts on success
     chrome.storage.local.remove('draftVariables'); // Clear drafts on success
     modal.hidden = true;
     notifyServiceWorker('SUBMIT_VARIABLES', { variables: flatVariables });

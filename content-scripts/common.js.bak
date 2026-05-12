@@ -480,6 +480,13 @@ function setupMessageListener(handler) {
       return true;
     }
 
+    if (message.type === 'SKIP_COUNTDOWN') {
+      window.PromptQueueCommon.isSkipped = true;
+      log.info('Received SKIP_COUNTDOWN signal from Service Worker.');
+      sendResponse({ success: true, skipped: true });
+      return true;
+    }
+
     log.debug('Message received from background:', message);
 
     // Handle async response
@@ -726,6 +733,7 @@ function sleep(ms) {
 function sleepWithCountdown(ms, phaseName) {
   return new Promise((resolve, reject) => {
     window.PromptQueueCommon.isSkipped = false; // Reset skip flag
+    window.PromptQueueCommon.isSkipped = false; // Reset skip flag
     const endTime = Date.now() + ms;
     const initialSeconds = Math.ceil(ms / 1000);
     sendToBackground('COUNTDOWN_UPDATE', { phase: phaseName, remaining: initialSeconds, total: initialSeconds }).catch(() => {});
@@ -734,6 +742,12 @@ function sleepWithCountdown(ms, phaseName) {
       if (window.PromptQueueCommon.isAborted) {
         clearInterval(interval);
         reject(new Error('Aborted by user Kill Switch.'));
+        return;
+      }
+      if (window.PromptQueueCommon.isSkipped) {
+        clearInterval(interval);
+        log.info(`Countdown for ${phaseName} skipped by user.`);
+        resolve(); // Safely bypass delay without failing
         return;
       }
       if (window.PromptQueueCommon.isSkipped) {
