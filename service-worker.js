@@ -559,7 +559,7 @@ class QueueProcessor {
         chrome.storage.local.set({ settings: updatedSettings });
       });
       
-      stateManager.set('runtimeVariables', {}, false); // Clear context
+      stateManager.set('runtimeVariables', {}, true, 'Queue empty context clear'); // Clear context synchronously to disk
       focusManager.clearProcessingTab();
       notifyPopup({ type: 'QUEUE_EMPTY', autoSendDisabled: true });
       return;
@@ -586,11 +586,11 @@ class QueueProcessor {
 
     if (neededPrompts.length > 0) {
       logger.info('Execution requires user input, yielding thread');
-      stateManager.set('processingState', ProcessingState.AWAITING_USER_INPUT);
+      stateManager.set('processingState', ProcessingState.AWAITING_USER_INPUT, true, 'processNextItem modal lock');
       const resumeType = stateManager.get('autoSendEnabled') ? 'auto' : 'manual';
-      stateManager.set('pendingResumeAction', resumeType, false);
+      stateManager.set('pendingResumeAction', resumeType, true, 'processNextItem resume intent');
       
-      stateManager.set('lastNeededPrompts', neededPrompts, false);
+      stateManager.set('lastNeededPrompts', neededPrompts, true, 'processNextItem modal payload');
       notifyPopup({ 
         type: 'PROMPT_NEEDS_INPUT', 
         neededPrompts: neededPrompts 
@@ -809,11 +809,11 @@ class QueueProcessor {
 
     if (neededPrompts.length > 0) {
       logger.info('Execution requires user input, yielding thread');
-      stateManager.set('processingState', ProcessingState.AWAITING_USER_INPUT);
+      stateManager.set('processingState', ProcessingState.AWAITING_USER_INPUT, true, 'sendNextItem modal lock');
       const resumeType = stateManager.get('autoSendEnabled') ? 'auto' : 'manual';
-      stateManager.set('pendingResumeAction', resumeType, false);
+      stateManager.set('pendingResumeAction', resumeType, true, 'sendNextItem resume intent');
       
-      stateManager.set('lastNeededPrompts', neededPrompts, false);
+      stateManager.set('lastNeededPrompts', neededPrompts, true, 'sendNextItem modal payload');
       notifyPopup({ 
         type: 'PROMPT_NEEDS_INPUT', 
         neededPrompts: neededPrompts 
@@ -1469,7 +1469,7 @@ class MessageRouter {
 
       case 'CLEAR_RUNTIME_VARIABLES':
         logger.info('Clearing runtime variables for fresh chain load');
-        stateManager.set('runtimeVariables', {}, false);
+        stateManager.set('runtimeVariables', {}, true, 'Clear chain context');
         return { cleared: true };
 
       case 'SUBMIT_VARIABLES':
@@ -1484,7 +1484,7 @@ class MessageRouter {
         const incomingVars = payload.variables || {};
         const newVars = { ...currentVars, ...incomingVars };
 
-        stateManager.set('runtimeVariables', newVars, false);
+        stateManager.set('runtimeVariables', newVars, true, 'User submitted variables');
         
         // Reset state and resume execution pipeline
         stateManager.set('processingState', ProcessingState.IDLE);
