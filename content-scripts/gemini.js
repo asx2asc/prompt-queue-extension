@@ -32,6 +32,7 @@
 
   const SITE_NAME = 'gemini';
   let currentExecDelay = 180000;
+  let currentSendAttempts = 100;
 
   /**
    * Selectors for Gemini interface elements
@@ -317,7 +318,7 @@
     // Re-query the button each time since Angular may recreate elements
     let sendButton = null;
     let attempts = 0;
-    while (attempts < 30) {
+    while (attempts < currentSendAttempts) {
       sendButton = findElement(SELECTORS.sendButton);
       if (sendButton && !isButtonDisabled(sendButton)) {
         break;
@@ -375,6 +376,14 @@
 
     // Fallback: try pressing Enter on the input
     log.debug('Button click may have failed, trying Enter key');
+    const allSendBtns = document.querySelectorAll(SELECTORS.sendButton.join(','));
+    let diagnostic = `Found ${allSendBtns.length} potential buttons. `;
+    if (allSendBtns.length > 0) diagnostic += `Disabled: ${allSendBtns[0].disabled}, aria-disabled: ${allSendBtns[0].getAttribute('aria-disabled')}.`;
+
+    // Validate UI state before attempting blind fallback
+    if (allSendBtns.length > 0 && (allSendBtns[0].disabled || allSendBtns[0].getAttribute('aria-disabled') === 'true')) {
+        throw new Error(`Execution halted. Send button explicitly disabled by ${SITE_NAME}. Context: ${diagnostic}`);
+    }
     const input = await getInputElement();
 
     input.dispatchEvent(new KeyboardEvent('keydown', {
@@ -416,6 +425,7 @@
           await injectPrompt(payload.prompt);
 
           currentExecDelay = payload.executionDelay || 180000;
+          currentSendAttempts = payload.sendButtonTimeoutAttempts || 100;
           log.info(`Text injected. Formulation pause: ${payload.formulationDelay || 60000}ms.`);
           try {
             await window.PromptQueueCommon.sleepWithCountdown(payload.formulationDelay || 60000, 'Formulating');

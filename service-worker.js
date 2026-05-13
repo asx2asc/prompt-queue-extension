@@ -128,15 +128,30 @@ class Logger {
     }
   }
 
+    async _persistLog(levelStr, ...args) {
+    try {
+      const formattedMsg = this._format(levelStr, ...args).join(' ');
+      const data = await chrome.storage.local.get('systemLogs');
+      const logs = data.systemLogs || [];
+      logs.unshift(formattedMsg);
+      if (logs.length > 200) logs.pop();
+      await chrome.storage.local.set({ systemLogs: logs });
+    } catch (e) {
+      console.error('Failed to persist log:', e);
+    }
+  }
+
   warn(...args) {
     if (this.level <= LogLevel.WARN) {
       console.warn(...this._format('WARN', ...args));
+      this._persistLog('WARN', ...args);
     }
   }
 
   error(...args) {
     if (this.level <= LogLevel.ERROR) {
       console.error(...this._format('ERROR', ...args));
+      this._persistLog('ERROR', ...args);
     }
   }
 }
@@ -234,18 +249,27 @@ class StateManager {
    * @param {any} value - State value
    * @param {boolean} persist - Whether to persist to storage
    */
-  set(key, value, persist = true) {
+    set(key, value, persist = true, reason = null) {
     const oldValue = this._state.get(key);
     this._state.set(key, value);
 
-    logger.debug(`State updated: ${key}`, { oldValue, newValue: value });
+    let caller = reason;
+    if (!caller) {
+      const stackLines = new Error().stack.split('\n');
+      caller = stackLines.length > 2 ? stackLines[2].trim() : 'Unknown Caller';
+    }
 
-    // Notify subscribers
+    logger.debug(`State updated: ${key} | By: ${caller}`, { oldValue, newValue: value });
+
+    // Notify subscribers synchronously for in-memory listeners
     this._notifySubscribers(key, value, oldValue);
 
-    // Schedule persistence
+    // Technical rationale: Eliminate the 100ms async debouncer to fix MV3 state wiping.
+    // Writes are dispatched immediately to disk, removing race conditions against the popup.
     if (persist) {
-      this._schedulePersist(key);
+      chrome.storage.local.set({ [key]: value }).catch(err => {
+        logger.error(`Failed to persist state atomically for key ${key}:`, err);
+      });
     }
   }
 
@@ -286,41 +310,9 @@ class StateManager {
     }
   }
 
-  /**
-   * Schedule batched persistence
-   * @param {string} key - Key to persist
-   * @private
-   */
-  _schedulePersist(key) {
-    this._pendingPersist.add(key);
-
-    if (this._persistTimer) {
-      clearTimeout(this._persistTimer);
-    }
-
-    this._persistTimer = setTimeout(() => this._persist(), this._persistDelay);
-  }
-
-  /**
-   * Persist pending state to storage
-   * @private
-   */
-  async _persist() {
-    if (this._pendingPersist.size === 0) return;
-
-    const toStore = {};
-    for (const key of this._pendingPersist) {
-      toStore[key] = this._state.get(key);
-    }
-
-    try {
-      await chrome.storage.local.set(toStore);
-      logger.debug('State persisted:', Object.keys(toStore));
-      this._pendingPersist.clear();
-    } catch (error) {
-      logger.error('Failed to persist state:', error);
-    }
-  }
+  // Technical rationale: Deleted _schedulePersist and _persist methods entirely.
+  // MV3 extensions require immediate disk writes; debouncing violates lifecycle constraints
+  // and creates race conditions against the popup's synchronous storage.js module.
 
   /**
    * Get all state as an object (for debugging)
@@ -410,13 +402,7 @@ async function wakeUpTab(tabId) {
 async function sendToContentScript(tabId, message) {
   try {
     logger.debug(`Sending to content script (tab ${tabId}):`, message);
-
-    // Wake up the tab first to combat Chrome's background tab throttling
-    await wakeUpTab(tabId);
-
-    // Small delay to let the tab's JS context fully wake up
-    await new Promise(resolve => setTimeout(resolve, 100));
-
+    
     const response = await chrome.tabs.sendMessage(tabId, {
       ...message,
       source: 'background',
@@ -425,13 +411,21 @@ async function sendToContentScript(tabId, message) {
 
     logger.debug(`Response from content script (tab ${tabId}):`, response);
     return response;
+    
   } catch (error) {
-      if (error.message && error.message.includes('Receiving end does not exist')) {
-        logger.debug(`Could not establish connection to tab ${tabId} (Content script not ready)`);
-      } else {
-        logger.error(`Failed to send message to tab ${tabId}:`, error);
-      }
-      throw error;
+    const errorStr = error?.message || String(error);
+    const isConnectionError = errorStr.includes('Receiving end does not exist') || 
+      errorStr.includes('message port closed') || 
+      errorStr.includes('message channel closed');
+
+        if (isConnectionError) {
+      logger.warn(`Connection rejected for tab ${tabId}. Original reason: ${errorStr}`);
+      // Append explicit reason to allow upstream logic to differentiate true navigation from GC
+      throw new Error(`connection_lost_port_closed: ${errorStr}`);
+    }
+    
+    logger.error(`Failed to send message to tab ${tabId}:`, error);
+    throw error;
   }
 }
 
@@ -539,9 +533,18 @@ class QueueProcessor {
     }
 
     if (!processingTabId || !tabSiteMap[processingTabId]) {
-      stateManager.set('processingState', ProcessingState.IDLE);
+      logger.warn('Processing tab context lost or unavailable. Gracefully pausing queue.');
+      stateManager.set('processingState', ProcessingState.IDLE, true);
+      stateManager.set('autoSendEnabled', false, true);
+      
+      chrome.storage.local.get('settings').then(stored => {
+        const updatedSettings = stored.settings || {};
+        updatedSettings.autoSendEnabled = false;
+        chrome.storage.local.set({ settings: updatedSettings });
+      });
+      
       focusManager.clearProcessingTab();
-      notifyPopup({ type: 'PROCESSING_STOPPED', reason: 'unsupported_site' });
+      notifyPopup({ type: 'PROCESSING_STOPPED', reason: 'tab_navigated_away' });
       return;
     }
 
@@ -597,7 +600,9 @@ class QueueProcessor {
 
     delete queue[0].retryCount; // Purge stale retry data
     const nextItem = queue[0];
-    this.activePromptId = nextItem.id;
+    // Technical rationale: Replaced volatile class property with persistent state insertion
+    // ensuring the UUID survives the MV3 lifecycle destruction.
+    stateManager.set('activePromptId', nextItem.id, true);
     let resolvedPromptText = nextItem.prompt;
 
     // EPHEMERAL COMPILATION
@@ -622,7 +627,7 @@ class QueueProcessor {
 
       const response = await sendToContentScript(processingTabId, {
         type: OutgoingMessageType.INJECT_PROMPT,
-        payload: { prompt: resolvedPromptText, id: nextItem.id, formulationDelay: stateManager.get('settings')?.formulationDelay || 60000, executionDelay: stateManager.get('settings')?.executionDelay || 180000 }
+        payload: { prompt: resolvedPromptText, id: nextItem.id, formulationDelay: stateManager.get('settings')?.formulationDelay || 60000, executionDelay: stateManager.get('settings')?.executionDelay || 180000, sendButtonTimeoutAttempts: stateManager.get('settings')?.sendButtonTimeoutAttempts || 100 }
       });
 
       if (response && response.success) {
@@ -636,7 +641,8 @@ class QueueProcessor {
       }
     } catch (error) {
       logger.error('Error processing queue item:', error);
-      if (error.message && (error.message.includes('message port closed') || error.message.includes('message channel closed') || error.message.includes('Receiving end does not exist'))) {
+      const errorStr = error?.message || String(error);
+      if (errorStr.includes('message port closed') || errorStr.includes('message channel closed') || errorStr.includes('Receiving end does not exist')) {
         logger.warn('Connection to tab interrupted (likely a page refresh). Pausing queue safely.');
         stateManager.set('processingState', ProcessingState.PAUSED_FOR_ERROR);
         notifyPopup({ 
@@ -646,14 +652,25 @@ class QueueProcessor {
         });
         return;
       }
-      stateManager.set('processingState', ProcessingState.IDLE);
-      stateManager.set('autoSendEnabled', false);
+            const errorMsg = error.message || 'Unknown injection failure';
+      stateManager.set('processingState', ProcessingState.PAUSED_FOR_ERROR);
+      stateManager.set('lastErrorPayload', { 
+        errorType: 'injection_error', 
+        message: `Failed to inject prompt: ${errorMsg}. Please check the page UI and click Ready to resume.` 
+      }, true);
+      
+      // Automatically pauses auto-send safely
       chrome.storage.local.get('settings').then(stored => {
         const updatedSettings = stored.settings || {};
         updatedSettings.autoSendEnabled = false;
         chrome.storage.local.set({ settings: updatedSettings });
       });
-      notifyPopup({ type: 'PROCESSING_ERROR', error: error.message, item: nextItem });
+      
+      notifyPopup({ 
+        type: 'PAUSED_FOR_ERROR', 
+        errorType: 'injection_error',
+        message: errorMsg
+      });
       }
   }
 
@@ -678,9 +695,12 @@ class QueueProcessor {
       logger.info('Generation verified successful, mutating queue');
       const queue = stateManager.get('promptQueue') ||[];
       if (queue.length > 0) {
-        // SAFE FILTER: Only remove the exact prompt that initiated generation
-        const updatedQueue = queue.filter(item => item.id !== this.activePromptId);
-        stateManager.set('promptQueue', updatedQueue);
+        // Technical rationale: Fetch the surviving activePromptId from persistent state
+        // to correctly mathematically slice the queue array and un-jam the bottleneck.
+        const activePromptId = stateManager.get('activePromptId');
+        const updatedQueue = queue.filter(item => item.id !== activePromptId);
+        stateManager.set('promptQueue', updatedQueue, true);
+        stateManager.set('activePromptId', null, true); // Cleanup
       }
     } else if (payload.reason === 'rate_limit') {
       logger.warn(`Rate limit intercepted. Queue slice aborted. Transitioning to PAUSED_FOR_ERROR.`);
@@ -692,6 +712,16 @@ class QueueProcessor {
         type: 'PAUSED_FOR_ERROR', 
         errorType: 'rate_limit',
         message: "you've ran out of credits on 'aistudio.google.com' please tap the below ready button when you are ready to read attempt this prompt and continue"
+      });
+      return; // Halt execution completely
+    } else if (payload.reason === 'internal_error') {
+      logger.warn(`Internal error intercepted. Queue slice aborted. Transitioning to PAUSED_FOR_ERROR.`);
+      stateManager.set('processingState', ProcessingState.PAUSED_FOR_ERROR);
+      
+      notifyPopup({ 
+        type: 'PAUSED_FOR_ERROR', 
+        errorType: 'internal_error',
+        message: "An internal error has occurred on AI Studio. Please verify the platform is stable, then click 'Ready' to re-attempt this prompt."
       });
       return; // Halt execution completely
     } else if (payload.reason === 'timeout') {
@@ -793,7 +823,9 @@ class QueueProcessor {
 
     delete queue[0].retryCount; // Purge stale retry data
     const nextItem = queue[0];
-    this.activePromptId = nextItem.id;
+    // Technical rationale: Replaced volatile class property with persistent state insertion
+    // ensuring the UUID survives the MV3 lifecycle destruction.
+    stateManager.set('activePromptId', nextItem.id, true);
     let resolvedPromptText = nextItem.prompt;
 
     // EPHEMERAL COMPILATION
@@ -818,7 +850,7 @@ class QueueProcessor {
 
       const response = await sendToContentScript(currentTabId, {
         type: OutgoingMessageType.INJECT_PROMPT,
-        payload: { prompt: resolvedPromptText, id: nextItem.id, formulationDelay: stateManager.get('settings')?.formulationDelay || 60000, executionDelay: stateManager.get('settings')?.executionDelay || 180000 }
+        payload: { prompt: resolvedPromptText, id: nextItem.id, formulationDelay: stateManager.get('settings')?.formulationDelay || 60000, executionDelay: stateManager.get('settings')?.executionDelay || 180000, sendButtonTimeoutAttempts: stateManager.get('settings')?.sendButtonTimeoutAttempts || 100 }
       });
 
       if (response && response.success) {
@@ -831,7 +863,8 @@ class QueueProcessor {
       }
     } catch (error) {
       logger.error('Error sending next item:', error);
-      if (error.message && (error.message.includes('message port closed') || error.message.includes('message channel closed') || error.message.includes('Receiving end does not exist'))) {
+      const errorStr = error?.message || String(error);
+      if (errorStr.includes('message port closed') || errorStr.includes('message channel closed') || errorStr.includes('Receiving end does not exist')) {
         logger.warn('Connection to tab interrupted (likely a page refresh). Pausing queue safely.');
         stateManager.set('processingState', ProcessingState.PAUSED_FOR_ERROR);
         notifyPopup({ 
@@ -896,7 +929,7 @@ class FocusManager {
    */
   setProcessingTab(tabId) {
     this._processingTabId = tabId;
-    stateManager.set('processingTabId', tabId, false);
+    stateManager.set('processingTabId', tabId, true);
     logger.info('Processing tab set to:', tabId);
   }
 
@@ -913,7 +946,7 @@ class FocusManager {
    */
   clearProcessingTab() {
     this._processingTabId = null;
-    stateManager.set('processingTabId', null, false);
+    stateManager.set('processingTabId', null, true);
     logger.info('Processing tab cleared');
   }
 
@@ -984,7 +1017,7 @@ class TabTracker {
     logger.debug('Tab activated:', { tabId, windowId });
 
     const previousTabId = stateManager.get('currentTabId');
-    stateManager.set('currentTabId', tabId, false); // Don't persist tab ID
+    stateManager.set('currentTabId', tabId, true); // Don't persist tab ID
 
     // Check if this tab is on a supported site
     try {
@@ -1079,7 +1112,7 @@ class TabTracker {
     // If this was the current active tab, clear it
     const currentTabId = stateManager.get('currentTabId');
     if (tabId === currentTabId) {
-      stateManager.set('currentTabId', null, false);
+      stateManager.set('currentTabId', null, true);
     }
 
     // If this was the processing tab, stop processing
@@ -1121,7 +1154,7 @@ class TabTracker {
     try {
       const [activeTab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
       if (activeTab) {
-        stateManager.set('currentTabId', activeTab.id, false);
+        stateManager.set('currentTabId', activeTab.id, true);
 
         const siteType = getSiteFromUrl(activeTab.url);
         logger.info('Initialized with active tab:', {
@@ -1248,6 +1281,9 @@ class MessageRouter {
         const newAutoSendState = payload?.enabled ?? !stateManager.get('autoSendEnabled');
         logger.info('Auto-send toggled:', newAutoSendState);
 
+        // FIX: Force synchronous state update to bypass storage race conditions
+        stateManager.set('autoSendEnabled', newAutoSendState, false);
+
         if (newAutoSendState) {
           // Check if we should start processing
           const currentState = stateManager.get('processingState');
@@ -1267,7 +1303,7 @@ class MessageRouter {
                   const siteType = getSiteFromUrl(activeTab.url);
                   if (siteType) {
                     tabSiteMap[currentTabId] = siteType;
-                    stateManager.set('currentTabId', currentTabId, false);
+                    stateManager.set('currentTabId', currentTabId, true);
                     stateManager.set('tabSiteMap', tabSiteMap);
                     logger.info('TOGGLE_AUTO_SEND - refreshed tab info:', { currentTabId, siteType });
                   }
@@ -1276,22 +1312,22 @@ class MessageRouter {
                 logger.warn('Could not query active tab:', e);
               }
             }
-              if (!currentTabId || !tabSiteMap[currentTabId]) {
-                const availableTabs = Object.keys(tabSiteMap);
-                if (availableTabs.length > 0) {
-                  currentTabId = parseInt(availableTabs[availableTabs.length - 1], 10);
-                  logger.info('Fallback applied: Inheriting active LLM tab ID from tabSiteMap ->', currentTabId);
-                }
-              }
-              if (!currentTabId || !tabSiteMap[currentTabId]) {
-                const availableTabs = Object.keys(tabSiteMap);
-                if (availableTabs.length > 0) {
-                  currentTabId = parseInt(availableTabs[availableTabs.length - 1], 10);
-                  logger.info('Fallback applied: Inheriting active LLM tab ID from tabSiteMap ->', currentTabId);
-                }
-              }
 
-            logger.info('TOGGLE_AUTO_SEND - currentTabId:', currentTabId, 'tabSiteMap:', tabSiteMap);
+              if (!currentTabId || !tabSiteMap[currentTabId]) {
+                try {
+                  const tabs = await chrome.tabs.query({});
+                  const fallbackTab = tabs.reverse().find(t => getSiteFromUrl(t.url) !== null);
+                  if (fallbackTab) {
+                    currentTabId = fallbackTab.id;
+                    tabSiteMap[currentTabId] = getSiteFromUrl(fallbackTab.url);
+                    stateManager.set('tabSiteMap', tabSiteMap, true);
+                    stateManager.set('currentTabId', currentTabId, true);
+                    logger.info('Fallback applied: Found active LLM tab via query ->', currentTabId);
+                  }
+                } catch (e) {
+                  logger.warn('Fallback query failed:', e);
+                }
+              }logger.info('TOGGLE_AUTO_SEND - currentTabId:', currentTabId, 'tabSiteMap:', tabSiteMap);
 
             if (currentTabId && tabSiteMap[currentTabId]) {
               // IMPORTANT: Lock this tab as our processing target
@@ -1353,7 +1389,7 @@ class MessageRouter {
                   const siteType = getSiteFromUrl(activeTab.url);
                   if (siteType) {
                     tabSiteMap[currentTabId] = siteType;
-                    stateManager.set('currentTabId', currentTabId, false);
+                    stateManager.set('currentTabId', currentTabId, true);
                     stateManager.set('tabSiteMap', tabSiteMap);
                   }
                 }
@@ -1361,22 +1397,22 @@ class MessageRouter {
                 logger.warn('Could not query active tab:', e);
               }
             }
-              if (!currentTabId || !tabSiteMap[currentTabId]) {
-                const availableTabs = Object.keys(tabSiteMap);
-                if (availableTabs.length > 0) {
-                  currentTabId = parseInt(availableTabs[availableTabs.length - 1], 10);
-                  logger.info('Fallback applied: Inheriting active LLM tab ID from tabSiteMap ->', currentTabId);
-                }
-              }
-              if (!currentTabId || !tabSiteMap[currentTabId]) {
-                const availableTabs = Object.keys(tabSiteMap);
-                if (availableTabs.length > 0) {
-                  currentTabId = parseInt(availableTabs[availableTabs.length - 1], 10);
-                  logger.info('Fallback applied: Inheriting active LLM tab ID from tabSiteMap ->', currentTabId);
-                }
-              }
 
-            if (currentTabId && tabSiteMap[currentTabId]) {
+              if (!currentTabId || !tabSiteMap[currentTabId]) {
+                try {
+                  const tabs = await chrome.tabs.query({});
+                  const fallbackTab = tabs.reverse().find(t => getSiteFromUrl(t.url) !== null);
+                  if (fallbackTab) {
+                    currentTabId = fallbackTab.id;
+                    tabSiteMap[currentTabId] = getSiteFromUrl(fallbackTab.url);
+                    stateManager.set('tabSiteMap', tabSiteMap, true);
+                    stateManager.set('currentTabId', currentTabId, true);
+                    logger.info('Fallback applied: Found active LLM tab via query ->', currentTabId);
+                  }
+                } catch (e) {
+                  logger.warn('Fallback query failed:', e);
+                }
+              }if (currentTabId && tabSiteMap[currentTabId]) {
               focusManager.setProcessingTab(currentTabId);
               queueProcessor.startProcessing();
             }
@@ -1498,8 +1534,12 @@ class MessageRouter {
         stateManager.set('tabSiteMap', tabSiteMap);
 
         // PAGE REFRESH RECOVERY
-        if (stateManager.get('processingTabId') === tabId && stateManager.get('processingState') === ProcessingState.WAITING_FOR_RESPONSE) {
-          logger.warn(`Tab ${tabId} reloaded mid-generation. Recovering.`);
+        const state = stateManager.get('processingState');
+        const isWaiting = state === ProcessingState.WAITING_FOR_RESPONSE;
+        const isConnectionLost = state === ProcessingState.PAUSED_FOR_ERROR && stateManager.get('lastErrorPayload')?.errorType === 'connection_lost';
+        
+        if (stateManager.get('processingTabId') === tabId && (isWaiting || isConnectionLost)) {
+          logger.warn(`Tab ${tabId} reloaded. Recovering from state: ${state}.`);
           stateManager.set('processingState', ProcessingState.IDLE);
           const queue = stateManager.get('promptQueue') || [];
           if (queue.length > 0) {
@@ -1543,14 +1583,17 @@ class MessageRouter {
           }
           return { acknowledged: true };
         }
-        logger.error(`Error from tab ${tabId}:`, payload.message, payload.error);
+        
+        if (payload.isRetry) {
+          logger.warn(`Non-fatal retry attempt in tab ${tabId}:`, payload.message);
+          return { acknowledged: true };
+        }
+        
+        logger.error(`Fatal error from tab ${tabId}:`, payload.message, payload.error);
         
         if (stateManager.get('currentTabId') === tabId) {
-          
           stateManager.set('processingState', ProcessingState.IDLE);
-          
           notifyPopup({ type: 'PROCESSING_ERROR', error: payload.message });
-        
         }
         
         return { acknowledged: true };

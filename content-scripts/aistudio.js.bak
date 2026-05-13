@@ -387,14 +387,6 @@
 
     // Fallback: try keyboard shortcut
     log.debug('Button click may have failed, trying Ctrl+Enter');
-    const allSendBtns = document.querySelectorAll(SELECTORS.sendButton.join(','));
-    let diagnostic = `Found ${allSendBtns.length} potential buttons. `;
-    if (allSendBtns.length > 0) diagnostic += `Disabled: ${allSendBtns[0].disabled}, aria-disabled: ${allSendBtns[0].getAttribute('aria-disabled')}.`;
-
-    // Validate UI state before attempting blind fallback
-    if (allSendBtns.length > 0 && (allSendBtns[0].disabled || allSendBtns[0].getAttribute('aria-disabled') === 'true')) {
-        throw new Error(`Execution halted. Send button explicitly disabled by ${SITE_NAME}. Context: ${diagnostic}`);
-    }
     const input = await getInputElement();
 
     input.dispatchEvent(new KeyboardEvent('keydown', {

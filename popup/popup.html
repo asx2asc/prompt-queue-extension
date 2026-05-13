@@ -162,6 +162,14 @@
               <input type="number" id="setting-exec-delay" min="1" max="600" class="prompt-input" style="width: 80px; min-height: 36px; padding: 4px; text-align: center; font-weight: 600;" value="180">
             </div>
         </div>
+            
+            <div style="display: flex; justify-content: space-between; align-items: center; border-top: 1px solid var(--color-border-light); padding-top: 15px; margin-top: 15px;">
+              <div>
+                  <label class="input-label" style="margin:0; font-size: 0.95rem; color: var(--color-text-primary);">Send Button Timeout</label>
+                  <span class="input-hint" style="margin-top: 4px;">Max attempts (100ms each) to wait for Send button.</span>
+              </div>
+              <input type="number" id="setting-send-attempts" min="10" max="1000" class="prompt-input" style="width: 80px; min-height: 36px; padding: 4px; text-align: center; font-weight: 600;" value="100">
+            </div>
       </section>
     </div>
 

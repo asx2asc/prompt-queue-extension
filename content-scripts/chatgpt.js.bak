@@ -307,12 +307,7 @@
           return true;
         }
 
-                const allSendBtns = document.querySelectorAll(SELECTORS.sendButton.join(','));
-        let diagnostic = `Found ${allSendBtns.length} potential buttons. `;
-        if (allSendBtns.length > 0) {
-          diagnostic += `First button disabled state: ${allSendBtns[0].disabled}, aria-disabled: ${allSendBtns[0].getAttribute('aria-disabled')}.`;
-        }
-        throw new Error(`Send button unavailable and Enter fallback failed. Context: ${diagnostic}`);
+        throw new Error('Send button not available and Enter key fallback failed');
       }
 
       log.info(`Button interactive. Execution pause: ${currentExecDelay}ms.`);

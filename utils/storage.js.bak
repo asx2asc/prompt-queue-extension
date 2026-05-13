@@ -10,8 +10,7 @@ const STORAGE_KEYS = {
 };
 
 const DEFAULT_SETTINGS = {
-  autoSendEnabled: false,
-  sendButtonTimeoutAttempts: 100
+  autoSendEnabled: false
 };
 
 /**

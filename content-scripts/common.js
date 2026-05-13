@@ -486,8 +486,12 @@ function setupMessageListener(handler) {
     Promise.resolve()
       .then(() => handler(message, sender))
       .then(response => {
-        sendResponse({ success: true, ...response });
-      })
+        if (response && response.error) {
+            sendResponse({ success: false, ...response });
+          } else {
+            sendResponse({ success: true, ...response });
+          }
+        })
       .catch(error => {
         log.error('Message handler error:', error);
         sendResponse({ success: false, error: error.message });

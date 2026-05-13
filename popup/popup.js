@@ -16,7 +16,7 @@ const STORAGE_KEYS = {
 const DEFAULT_SETTINGS = {
   autoSendEnabled: false,
   formulationDelay: 60000,
-  executionDelay: 180000
+  executionDelay: 180000, sendButtonTimeoutAttempts: 100
 };
 
 function generateUUID() {
@@ -286,7 +286,7 @@ const STATUS_MESSAGES = {
 
 let currentSettings = { autoSendEnabled: false,
   formulationDelay: 60000,
-  executionDelay: 180000 };
+  executionDelay: 180000, sendButtonTimeoutAttempts: 100 };
 let currentTabInfo = { url: null, isSupported: false, siteName: null };
 
 // =============================================================================
@@ -317,6 +317,7 @@ function initializeElements() {
   elements.stopQueueBtn = getRequiredElement('#stop-queue-btn');
   elements.formDelayInput = getRequiredElement('#setting-form-delay');
   elements.execDelayInput = getRequiredElement('#setting-exec-delay');
+  elements.sendAttemptsInput = getRequiredElement('#setting-send-attempts');
 
   elements.queueList = getRequiredElement('#queue-list');
   elements.queueCount = getRequiredElement('#queue-count');
@@ -344,38 +345,6 @@ function initializeElements() {
 document.addEventListener('DOMContentLoaded', async () => {
   initializeElements();
   attachEventListeners();
-
-  // Initialize Drag-and-Drop Reordering
-  if (typeof Sortable !== 'undefined') {
-    Sortable.create(elements.queueList, {
-      handle: '.queue-item-drag-handle',
-      animation: 150,
-      ghostClass: 'queue-item-ghost',
-      onEnd: async function (evt) {
-        if (evt.oldIndex === evt.newIndex) return;
-        const queue = await storage.getQueue();
-        const movedItem = queue.splice(evt.oldIndex, 1)[0];
-        queue.splice(evt.newIndex, 0, movedItem);
-        await storage.updateQueue(queue);
-      }
-    });
-  }
-
-  // Initialize Drag-and-Drop Reordering
-  if (typeof Sortable !== 'undefined') {
-    Sortable.create(elements.queueList, {
-      handle: '.queue-item-drag-handle',
-      animation: 150,
-      ghostClass: 'queue-item-ghost',
-      onEnd: async function (evt) {
-        if (evt.oldIndex === evt.newIndex) return;
-        const queue = await storage.getQueue();
-        const movedItem = queue.splice(evt.oldIndex, 1)[0];
-        queue.splice(evt.newIndex, 0, movedItem);
-        await storage.updateQueue(queue);
-      }
-    });
-  }
 
   // Initialize Drag-and-Drop Reordering
   if (typeof Sortable !== 'undefined') {
@@ -483,6 +452,17 @@ function attachEventListeners() {
     currentSettings.executionDelay = valSec * 1000;
     storage.saveSettings(currentSettings).then(() => showStatusMessage('Delay saved', 'success'));
   });
+
+  if (elements.sendAttemptsInput) {
+    elements.sendAttemptsInput.addEventListener('change', (e) => {
+      const orig = parseInt(e.target.value, 10);
+      const val = Math.max(10, Math.min(1000, orig || 100));
+      e.target.value = val;
+      if (orig !== val) showStatusMessage('Attempts constrained to 10-1000 limits', 'warning');
+      currentSettings.sendButtonTimeoutAttempts = val;
+      storage.saveSettings(currentSettings).then(() => showStatusMessage('Attempts saved', 'success'));
+    });
+  }
 
   elements.saveQueueBtn.addEventListener('click', handleSaveQueue);
   elements.clearAllBtn.addEventListener('click', handleClearAll);
@@ -874,6 +854,7 @@ function updateSettingsUI(settings) {
   elements.autoSendToggle.setAttribute('aria-checked', settings.autoSendEnabled.toString());
   if (elements.formDelayInput) elements.formDelayInput.value = (settings.formulationDelay || 60000) / 1000;
   if (elements.execDelayInput) elements.execDelayInput.value = (settings.executionDelay || 180000) / 1000;
+  if (elements.sendAttemptsInput) elements.sendAttemptsInput.value = settings.sendButtonTimeoutAttempts || 100;
 }
 
 async function handleSendNext() {
@@ -1101,8 +1082,8 @@ function setupMessageListener() {
         if (message.type === 'QUEUE_EMPTY') {
           updateStatusIndicator('idle');
           showStatusMessage('Queue complete! All prompts sent.', 'success');
-          currentSettings.autoSendEnabled = false;
-          storage.saveSettings(currentSettings);
+          // Technical rationale: Removed physical database overwrite.
+          // The background script handles updating the DB. The popup only updates UI.
         } else if (message.type === 'PROMPT_SENT' || message.type === 'SENDING_PROMPT') {
           showStatusMessage('Prompt sent successfully', 'success');
         }
@@ -1113,6 +1094,7 @@ function setupMessageListener() {
         break;
       case 'PROCESSING_STOPPED':
         updateStatusIndicator('idle');
+      if (elements.autoSendToggle) elements.autoSendToggle.checked = false;
         if (message.reason === 'tab_navigated_away') showStatusMessage('Processing paused - tab navigated away', 'info');
         else if (message.reason === 'tab_closed') showStatusMessage('Processing stopped - tab closed', 'info');
         else if (message.reason === 'auto_send_disabled') showStatusMessage('Auto-send disabled', 'info');
@@ -1181,7 +1163,10 @@ function handleStateUpdate(payload) {
       lockActiveQueueItem(false);
 
       updateStatusIndicator('paused');
-      showStatusMessage('Queue paused due to rate limit.', 'warning');
+      const toastMsg = payload.errorType === 'internal_error' 
+        ? 'Queue paused due to internal error.' 
+        : 'Queue paused due to rate limit.';
+      showStatusMessage(toastMsg, 'warning');
       renderErrorPauseModal(payload);
       break;
     case 'QUEUE_ITEM_SENT':
@@ -1203,11 +1188,13 @@ function handleStateUpdate(payload) {
       storage.saveSettings(currentSettings);
       break;
     case 'PROCESSING_STOPPED':
-      currentSettings.autoSendEnabled = false;
-      storage.saveSettings(currentSettings);
+      // Technical rationale: Removed destructive storage writes. 
+      // The toggle UI is updated visually here, but physical state authority 
+      // remains solely with the Service Worker database writes.
       if (elements.progressContainer) elements.progressContainer.style.display = 'none';
       lockActiveQueueItem(false);
       updateStatusIndicator('idle');
+      if (elements.autoSendToggle) elements.autoSendToggle.checked = false;
       if (elements.stopQueueBtn) {
         elements.stopQueueBtn.disabled = false;
         elements.stopQueueBtn.innerHTML = '<span class="btn-icon-left">&#9632;</span> Stop Auto-Run';
@@ -1220,6 +1207,8 @@ function handleStateUpdate(payload) {
       if (elements.progressContainer) elements.progressContainer.style.display = 'none';
 
       updateStatusIndicator('idle');
+      if (elements.autoSendToggle) elements.autoSendToggle.checked = false;
+      if (elements.stopQueueBtn) { elements.stopQueueBtn.disabled = false; elements.stopQueueBtn.style.display = 'none'; }
       showStatusMessage(payload.error || 'Processing error', 'error');
       break;
     case 'SITE_CONNECTED':
