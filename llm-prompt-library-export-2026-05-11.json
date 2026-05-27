@@ -1,4 +1,3 @@
-
 [
   {
     "createdAt": 1778354315999,
@@ -493,6 +492,19 @@
           "What type of file are we modifying? (e.g., 1. HTML/JS Webpage, 2. Python Script, 3. C# Project, 4. React/Node)",
           "What type of file are we modifying? (e.g., 1. HTML/JS Webpage, 2. Python Script, 3. C# Project, 4. React/Node)",
           "Which Year Group?"
+        ]
+      }
+    ]
+  },
+  {
+    "createdAt": 1779892324055,
+    "id": "93514a94-7efc-4f99-ab96-22f05845ca48",
+    "name": "Github Commit",
+    "prompts": [
+      {
+        "prompt": "produce github commit title and description explaining features, ui, ux added, removed, improved between original version and mew version attached relating to {{what week, lesson, part, and pedological section is it? e.g. week 1, lesson 1, part 1, we do}}",
+        "variables": [
+          "what week, lesson, part, and pedological section is it? e.g. week 1, lesson 1, part 1, we do"
         ]
       }
     ]
